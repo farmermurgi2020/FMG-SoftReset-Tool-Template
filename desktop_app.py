@@ -9,8 +9,10 @@ import threading
 import tkinter as tk
 from datetime import datetime, timezone
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 from typing import Any
+
+import hard_reset
 
 from config import (
     CONFIG_PATH,
@@ -158,12 +160,15 @@ class LocalDashboard:
         self.overview_tab = ttk.Frame(self.tabs, padding=10)
         self.settings_tab = ttk.Frame(self.tabs, padding=10)
         self.history_tab = ttk.Frame(self.tabs, padding=10)
+        self.hard_tab = ttk.Frame(self.tabs, padding=10)
         self.tabs.add(self.overview_tab, text="Zones and reset plan")
         self.tabs.add(self.settings_tab, text="Local settings")
         self.tabs.add(self.history_tab, text="Run history")
+        self.tabs.add(self.hard_tab, text="Hard reset (player data)")
         self._build_overview()
         self._build_settings()
         self._build_history()
+        self._build_hard_reset()
 
         scheduler_frame = ttk.LabelFrame(outer, text="Local scheduler", padding=8)
         scheduler_frame.pack(fill="x", pady=(8, 0))
@@ -356,6 +361,215 @@ class LocalDashboard:
     def _on_tab_changed(self, _event: Any = None) -> None:
         if self.tabs.select() == str(self.history_tab):
             self.refresh_history()
+        elif self.tabs.select() == str(self.hard_tab):
+            self.refresh_hard_reset()
+
+    # ----- Hard Reset (Player Data only) -----------------------------------------------------
+
+    def _build_hard_reset(self) -> None:
+        ttk.Label(
+            self.hard_tab,
+            wraplength=1000,
+            justify="left",
+            text=(
+                "Removes every character so players start fresh, and restarts the world at day 1. "
+                "On the next server start the mod also removes all safehouses and factions.\n"
+                "Kept: map chunks (buildings, loot, player-built bases), zombie and animal population, "
+                "vehicles, accounts, passwords and admin roles. Run a soft reset first if you want the "
+                "map refreshed too: once safehouses are gone they no longer protect anything."
+            ),
+        ).pack(anchor="w", pady=(0, 8))
+        frame = ttk.LabelFrame(self.hard_tab, text="What a hard reset moves out of the save", padding=6)
+        frame.pack(fill="both", expand=True)
+        columns = ("entry", "what", "files", "size")
+        self.hard_tree = ttk.Treeview(frame, columns=columns, show="headings", height=9)
+        for key, heading, width in (
+            ("entry", "File or folder", 200),
+            ("what", "What it holds", 440),
+            ("files", "Files", 80),
+            ("size", "Size", 100),
+        ):
+            self.hard_tree.heading(key, text=heading)
+            self.hard_tree.column(key, width=width, anchor="w")
+        self.hard_tree.pack(fill="both", expand=True)
+        self.hard_summary_var = tk.StringVar(value="Open this tab to read the save.")
+        ttk.Label(self.hard_tab, textvariable=self.hard_summary_var, wraplength=1000, justify="left").pack(
+            anchor="w", pady=(8, 0))
+        self.hard_note_var = tk.StringVar(value="")
+        ttk.Label(self.hard_tab, textvariable=self.hard_note_var, wraplength=1000, justify="left",
+                  foreground="#1d5e20").pack(anchor="w", pady=(4, 0))
+        actions = ttk.Frame(self.hard_tab)
+        actions.pack(fill="x", pady=(10, 0))
+        self.hard_button = ttk.Button(actions, text="Hard Reset (Player Data only)", command=self.hard_reset_apply)
+        self.hard_button.pack(side="right")
+        self.hard_undo_button = ttk.Button(actions, text="Undo Latest Hard Reset", command=self.hard_reset_undo)
+        self.hard_undo_button.pack(side="right", padx=(0, 8))
+        ttk.Button(actions, text="Refresh", command=self.refresh_hard_reset).pack(side="right", padx=(0, 8))
+        self.hard_progress_var = tk.StringVar(value="")
+        ttk.Label(actions, textvariable=self.hard_progress_var, wraplength=600).pack(side="left", fill="x", expand=True)
+
+    @staticmethod
+    def _describe_hard_note(note: dict[str, Any] | None) -> str:
+        if not note:
+            return ""
+        status = note.get("status")
+        if status == "pending":
+            return (f"Hard reset done on {_display_time(note.get('requestedAt'))}. Safehouses and factions "
+                    "will be removed the next time the server starts.")
+        if status == "done":
+            text = (f"Last hard reset finished {_display_time(note.get('completedAt'))}: "
+                    f"{note.get('safehousesRemoved', 0)} safehouses and {note.get('factionsRemoved', 0)} "
+                    "factions removed by the mod.")
+            if note.get("knoxClaimFound"):
+                text += (f" Knox Claim: {note.get('knoxLandClaimsRemoved', 0)} land claims and "
+                         f"{note.get('knoxVehicleClaimsRemoved', 0)} vehicle claims cleared.")
+            return text
+        if status == "failed":
+            return f"Last hard reset: the mod could not remove everything: {note.get('error', 'unknown error')}"
+        if status == "cancelled":
+            return "Last hard reset was undone before the server started; nothing was removed in game."
+        return "The hard reset note could not be read."
+
+    def refresh_hard_reset(self) -> None:
+        self.hard_tree.delete(*self.hard_tree.get_children())
+        try:
+            config = load_config()
+            hard_reset.require_local(config)
+            plan = hard_reset.plan_hard_reset(config)
+            save_dir = Path(plan["save_dir"])
+        except (OSError, ConfigError, hard_reset.WorkerError, KeyError, TypeError) as exc:
+            self.hard_summary_var.set(f"Cannot read the save: {exc}")
+            self.hard_note_var.set("")
+            self.hard_button.configure(state="disabled")
+            self.hard_undo_button.configure(state="disabled")
+            return
+        for item in plan["items"]:
+            self.hard_tree.insert("", "end", values=(
+                item["name"], item["label"], item["files"], f"{item['bytes'] / 1_048_576:.1f} MB"))
+        self.hard_summary_var.set(
+            f"Save: {save_dir}\nCharacters that will be removed: {hard_reset.or_unknown(plan['characters'])}. "
+            f"Safehouses removed on next server start: {hard_reset.or_unknown(plan['safehouses'])} "
+            "(plus all factions and Knox Claim claims).")
+        self.hard_note_var.set(self._describe_hard_note(plan["note"]))
+        busy = self.force_running
+        self.hard_button.configure(state="disabled" if busy else "normal")
+        has_undo = hard_reset.latest_rollback(save_dir) is not None
+        self.hard_undo_button.configure(state="normal" if has_undo and not busy else "disabled")
+
+    def _hard_reset_preflight(self) -> tuple[dict[str, Any], Path] | None:
+        if self.force_running:
+            return None
+        try:
+            config = load_config()
+            hard_reset.require_local(config)
+            if not self._scheduler_lock_is_available():
+                raise ConfigError("Stop the local scheduler first")
+            return config, Path(config["server"]["save_dir"]).resolve(strict=True)
+        except (OSError, ConfigError, hard_reset.WorkerError, KeyError, TypeError) as exc:
+            messagebox.showerror("Cannot start hard reset", str(exc), parent=self.root)
+            return None
+
+    def hard_reset_apply(self) -> None:
+        checked = self._hard_reset_preflight()
+        if checked is None:
+            return
+        config, save_dir = checked
+        try:
+            plan = hard_reset.plan_hard_reset(config)
+        except (OSError, hard_reset.WorkerError) as exc:
+            messagebox.showerror("Cannot start hard reset", str(exc), parent=self.root)
+            return
+        prompt = (
+            "Hard Reset (Player Data only)\n\n"
+            f"- Removes {hard_reset.or_unknown(plan['characters'])} characters: every player starts with "
+            "a new character.\n"
+            "- Restarts the world clock at day 1 (power and water come back on).\n"
+            "- On the next server start, removes ALL safehouses, factions and Knox Claim claims.\n"
+            "- Keeps map chunks, zombies, animals, vehicles, accounts and admin roles.\n\n"
+            f"Save folder: {save_dir}\n\n"
+            "The game must be fully closed. The removed files are kept in a hardreset.rollback "
+            "folder, so this can be undone. Continue?"
+        )
+        if not messagebox.askyesno("Confirm Hard Reset", prompt, icon="warning", parent=self.root):
+            return
+        name = config["server"]["name"]
+        typed = simpledialog.askstring(
+            "Type the server name", f"Type the server name to confirm:\n{name}", parent=self.root)
+        if typed is None:
+            return
+        if typed.strip() != name:
+            messagebox.showerror("Hard reset cancelled", "The server name did not match.", parent=self.root)
+            return
+        self._run_hard_reset_command(
+            ["--apply", "--confirm-server-stopped", "--confirm-save-path", str(save_dir)],
+            "Hard reset",
+        )
+
+    def hard_reset_undo(self) -> None:
+        checked = self._hard_reset_preflight()
+        if checked is None:
+            return
+        _config, save_dir = checked
+        latest = hard_reset.latest_rollback(save_dir)
+        if latest is None:
+            messagebox.showerror("Nothing to undo", "No hard reset rollback folder was found.", parent=self.root)
+            return
+        prompt = (
+            f"Put back the characters, world clock, safehouses, factions and claims from {latest.name}?\n\n"
+            "map_meta.bin and global_mod_data.bin are restored from that hard reset too, so building "
+            "and room changes and every mod's saved data (claims, shops, events...) since then are lost. "
+            "Characters created after the hard reset are moved into a new hardreset.rollback folder "
+            "(so this undo can itself be undone).\n\n"
+            "The game must be fully closed. Continue?"
+        )
+        if not messagebox.askyesno("Confirm undo", prompt, icon="warning", parent=self.root):
+            return
+        self._run_hard_reset_command(
+            ["--undo", "--confirm-server-stopped", "--confirm-save-path", str(save_dir)],
+            "Undo hard reset",
+        )
+
+    def _run_hard_reset_command(self, arguments: list[str], label: str) -> None:
+        self.force_running = True
+        for button in (self.hard_button, self.hard_undo_button, self.force_button, self.rollback_button,
+                       self.start_scheduler_button):
+            button.configure(state="disabled")
+        self.hard_progress_var.set(f"{label} is running. Keep the game closed until it finishes...")
+        command = [sys.executable, str(ROOT / "hard_reset.py"), *arguments]
+        env = os.environ.copy()
+        env["PZRESET_CONFIG"] = str(CONFIG_PATH)
+
+        def run() -> None:
+            # Streamed line by line (like rollback and Force Chunk Refresh) so the tab shows progress.
+            try:
+                process = subprocess.Popen(
+                    command, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, encoding="utf-8", errors="replace", bufsize=1,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                lines: list[str] = []
+                for line in process.stdout or ():
+                    lines.append(line.rstrip())
+                    self.root.after(0, lambda message=line.rstrip(): self.hard_progress_var.set(message))
+                returncode = process.wait()
+                output = "\n".join(lines).strip()
+                self.root.after(0, lambda: self._finish_hard_reset(label, returncode, output))
+            except Exception as exc:
+                self.root.after(0, lambda error=exc: self._finish_hard_reset(label, 1, str(error)))
+
+        threading.Thread(target=run, name="fmg-hard-reset", daemon=True).start()
+
+    def _finish_hard_reset(self, label: str, returncode: int, output: str) -> None:
+        self.force_running = False
+        self._refresh_scheduler_controls()
+        self._refresh_rollback_button()
+        self.refresh_hard_reset()
+        if returncode == 0:
+            self.hard_progress_var.set(f"{label} completed.")
+            messagebox.showinfo(f"{label} complete", output or f"{label} completed.", parent=self.root)
+        else:
+            self.hard_progress_var.set(f"{label} failed. Nothing was changed unless the message says otherwise.")
+            messagebox.showerror(f"{label} failed", output or "The worker returned an error.", parent=self.root)
 
     def _load_controls(self) -> None:
         local_override = desktop_override_active(self.config, self.export)

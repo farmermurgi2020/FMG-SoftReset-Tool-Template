@@ -15,17 +15,24 @@ from pathlib import Path
 from typing import Any
 
 from config import ROOT, ConfigError, validate_config
-from cronjob_sync import pause_cronjob, sync_cronjob
+from cronjob_sync import WORKFLOW_FILE, pause_cronjob, sync_cronjob
+from dedicated_workflow import MODES
 from schedule import github_cron_lines
 
 
 HTML_PATH = ROOT / "web" / "dedicated_dashboard.html"
 CONFIG_PATH = ROOT / "dedicated-config.json"
 LOCAL_PREFS_PATH = ROOT / "dedicated-dashboard.local.json"
-WORKFLOW_PATH = ".github/workflows/pz-dedicated-reset.yml"
-ENVIRONMENT_NAME = "pinhosting"
+WORKFLOW_PATH = f".github/workflows/{WORKFLOW_FILE}"
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
 API_ROOT = "https://api.github.com"
+DISPATCH_LABELS = {
+    "dry-run": "Read-only dry run",
+    "apply": "Reset apply",
+    "rollback": "Rollback",
+    "hard-reset": "Hard reset (player data)",
+    "hard-reset-undo": "Undo hard reset",
+}
 
 
 def _default_config() -> dict[str, Any]:
@@ -189,13 +196,15 @@ def _put_repo_file(
 
 
 def _workflow_text(schedule: dict[str, Any], github_schedule: bool = True) -> str:
-    schedule_block = ""
-    # Only GitHub's UTC cron needs the daylight-saving line check; cron-job.org uses local time.
-    schedule_env = "          PZ_SCHEDULE_CRON: ${{ github.event.schedule }}\n" if github_schedule else ""
+    mode_options = "".join(f"          - {mode}\n" for mode in MODES)
+    schedule_block = schedule_env = ""
     if not github_schedule:
-        # cron-job.org starts scheduled runs; a GitHub schedule as well could reset twice.
+        # cron-job.org starts scheduled runs (in local time); a GitHub schedule as well could reset twice.
         schedule_block = "  # Scheduled runs are started by cron-job.org (Run workflow, action: scheduled).\n"
-    elif schedule["enabled"]:
+    else:
+        # Only GitHub's UTC cron needs the daylight-saving line check.
+        schedule_env = "          PZ_SCHEDULE_CRON: ${{ github.event.schedule }}\n"
+    if github_schedule and schedule["enabled"]:
         # GitHub Actions runs cron in UTC only, so the local time is converted here.
         lines = "".join(f"    - cron: '{cron}'\n" for cron in github_cron_lines(schedule))
         schedule_block = (
@@ -211,18 +220,13 @@ on:
 {schedule_block}  workflow_dispatch:
     inputs:
       action:
-        description: What to run. Stop the server in the Pine Hosting panel before apply or rollback. "scheduled" is used by cron-job.org and only runs inside the reset window.
+        description: What to run. Stop the server in the Pine Hosting panel before apply, rollback or hard reset. "scheduled" is used by cron-job.org and only runs inside the reset window. "hard-reset" removes all characters and restarts at day 1.
         required: true
         type: choice
         options:
-          - dry-run
-          - apply
-          - rollback
-          - benchmark
-          - scheduled
-        default: dry-run
+{mode_options}        default: dry-run
       confirm_server_name:
-        description: For apply or rollback, type the server name exactly as configured
+        description: For apply, rollback or hard reset, type the server name exactly as configured
         required: false
         type: string
         default: ''
@@ -314,7 +318,7 @@ def _sync_cronjob_side(
     if github_token:
         # Check the token can see this repository's workflow before handing it to cron-job.org.
         try:
-            _api_request(github_token, "GET", _repo_path(owner, repo, "/actions/workflows/pz-dedicated-reset.yml"))
+            _api_request(github_token, "GET", _repo_path(owner, repo, f"/actions/workflows/{WORKFLOW_FILE}"))
         except RuntimeError as exc:
             raise ConfigError(
                 "the GitHub token for cron-job.org cannot read this repository's workflow "
@@ -427,6 +431,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             self._check_browser_origin()
             payload = self._read_json()
+            token = str(payload.get("token", ""))
             config, preferences = _save_local_settings(payload)
             if self.path == "/api/save":
                 self._json(200, {"message": "Dedicated settings saved locally. SFTP secrets were not written to disk."})
@@ -435,7 +440,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 message = _sync_to_github(
                     config,
                     preferences,
-                    str(payload.get("token", "")),
+                    token,
                     payload.get("credentials") or {},
                     payload.get("cronjob") or {},
                 )
@@ -443,30 +448,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/dispatch":
                 action = str(payload.get("action", "dry-run"))
-                if action not in {"dry-run", "apply", "rollback"}:
+                if action not in DISPATCH_LABELS:
                     raise ConfigError("unknown workflow action")
                 confirm = str(payload.get("confirm_server_name", "")).strip()
                 if action != "dry-run" and confirm != config["server"]["name"]:
-                    raise ConfigError("type the server name exactly to confirm apply or rollback")
-                _sync_to_github(
-                    config,
-                    preferences,
-                    str(payload.get("token", "")),
-                    payload.get("credentials") or {},
-                )
+                    raise ConfigError("type the server name exactly to confirm apply, rollback or hard reset")
+                _sync_to_github(config, preferences, token, payload.get("credentials") or {})
                 owner, repo, branch = preferences["owner"], preferences["repo"], preferences["branch"]
-                path = _repo_path(
-                    owner,
-                    repo,
-                    "/actions/workflows/pz-dedicated-reset.yml/dispatches",
-                )
                 _api_request(
-                    str(payload.get("token", "")),
+                    token,
                     "POST",
-                    path,
+                    _repo_path(owner, repo, f"/actions/workflows/{WORKFLOW_FILE}/dispatches"),
                     {"ref": branch, "inputs": {"action": action, "confirm_server_name": confirm}},
                 )
-                label = {"dry-run": "Read-only dry run", "apply": "Reset apply", "rollback": "Rollback"}[action]
+                label = DISPATCH_LABELS[action]
                 self._json(200, {"message": f"{label} started for {owner}/{repo}. Track it in the repository Actions tab."})
                 return
             self._json(404, {"error": "not found"})

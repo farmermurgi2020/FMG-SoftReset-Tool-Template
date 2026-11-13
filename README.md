@@ -26,6 +26,11 @@ settings. This repository does the actual reset while the server is stopped.
   kept.
 - **Safe swaps.** Protected files are copied and checked before the live folders
   are swapped. If a swap fails, the originals are put back.
+- **Hard Reset (Player Data only).** Removes every character so players start
+  fresh, restarts the world at day 1, and removes all safehouses and factions
+  (and Knox Claim land and vehicle claims). The map, zombies, animals, vehicles
+  and admin accounts are kept, and it can be undone. See
+  [Hard Reset](#hard-reset-player-data-only).
 
 ## Supported setups
 
@@ -201,6 +206,44 @@ Good to know:
 
 The tool does **not** check whether the server is running, so always stop it
 first. No backup is kept on GitHub, so keep your host's own backups turned on.
+
+## Hard Reset (Player Data only)
+
+For a fresh start for players without wiping the map: everyone makes a new
+character, and the world starts again at day 1.
+
+**Removed:** every character (inventory, skills, health), dead players'
+zombies, each player's revealed map and map markings, the world clock (day
+count, time, weather), the vegetation growth clock and the radio/TV schedule.
+On the next server start the mod also removes **all safehouses and factions**.
+If the [Knox Claim](https://steamcommunity.com/sharedfiles/filedetails/?id=3776531408)
+mod is installed, its land claims, vehicle claims and pending requests are
+cleared too. Otherwise it would rebuild the removed safehouses.
+
+**Kept:** map chunks (buildings, loot and player-built bases), zombie and animal
+population, vehicles (they stay where they are, unclaimed), accounts, passwords
+and admin roles. Run a soft reset **first** if you want the map refreshed too:
+once safehouses are gone they no longer protect anything.
+
+**How to run it** (stop the server first, as for any reset):
+- **Locally hosted:** in the local dashboard, open the **Hard reset (player
+  data)** tab, check the list, click **Hard Reset (Player Data only)** and type
+  the server name.
+- **Linux dedicated:** in the dedicated dashboard's **Hard Reset (Player Data
+  only)** card, type the server name and click the button (or use **Run
+  workflow** with action `hard-reset`). Sync once after updating, so the
+  workflow knows the new actions.
+- Then start the server. The console shows `[FMGResetTool] Hard reset finished:
+  removed N safehouses and M factions.`, and 10 in-game minutes later a check
+  confirms none came back. Your server must run mod version 0.4.2 or newer.
+
+**Undo:** the removed files are kept in a `hardreset.rollback-<time>` folder in
+the save, together with copies of `map_meta.bin` and `global_mod_data.bin`.
+**Undo latest hard reset** (or action `hard-reset-undo`) puts everything back:
+characters, day count, safehouses, factions and claims. Building changes and
+every mod's saved data changed after the hard reset are lost on undo. Only the
+newest hard reset rollback is kept, so running a second hard reset removes the
+undo copy of the first.
 
 ## Good to know
 

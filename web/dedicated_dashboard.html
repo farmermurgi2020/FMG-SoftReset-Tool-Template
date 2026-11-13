@@ -123,6 +123,19 @@
     </div>
   </section>
 
+  <section class="card">
+    <h2>Hard Reset (Player Data only)</h2>
+    <p class="hint">Removes every character so players start fresh with a new one, and restarts the world at day 1 (world clock, vegetation growth and the radio/TV schedule). On the next server start, the FMGResetTool mod also removes all safehouses and factions. Kept: map chunks (buildings, loot, player-built bases), zombie and animal population, vehicles, accounts, passwords and admin roles. Run a soft reset first if you want the map refreshed too: once safehouses are gone they no longer protect anything.</p>
+    <p class="warning">Stop the server in the Pine Hosting panel first and wait until it shows offline. The removed files are moved into a <code>hardreset.rollback-…</code> folder in the save (with copies of <code>map_meta.bin</code> and <code>global_mod_data.bin</code>), so <b>Undo latest hard reset</b> brings the characters, day count, safehouses, factions and Knox Claim claims back. Building changes and every mod's saved data changed after the hard reset are lost on undo. The server must run the updated FMGResetTool mod (with FMGHardReset.lua) for safehouses and factions to be removed.</p>
+    <div class="grid">
+      <label>Type the server name to confirm<input id="hard_confirm_server_name" autocomplete="off" placeholder="exact Server name from above"></label>
+    </div>
+    <div class="actions" style="margin-top:12px">
+      <button id="hard_reset">Hard Reset (Player Data only)</button>
+      <button class="secondary" id="hard_reset_undo">Undo latest hard reset</button>
+    </div>
+  </section>
+
 <script>
 let sessionToken = "";
 const byId = id => document.getElementById(id);
@@ -175,23 +188,31 @@ byId("sync").onclick = async () => {
     showStatus(result.message);
   } catch (e) { showStatus(e.message); }
 };
-async function dispatch(action) {
+async function dispatch(action, confirmId = "confirm_server_name") {
   try {
     const token = sessionToken || value("token");
     if (!token) throw new Error("Enter a fine-grained GitHub token to start the workflow.");
-    const confirm_server_name = action === "dry-run" ? "" : value("confirm_server_name");
+    const confirm_server_name = action === "dry-run" ? "" : value(confirmId);
     if (action !== "dry-run" && confirm_server_name !== value("name")) {
       throw new Error("Type the server name exactly to confirm " + action + ".");
     }
     showStatus("Starting " + action + "…");
     const result = await post("/api/dispatch", {...settingsFromForm(), token, action, confirm_server_name});
-    if (action !== "dry-run") byId("confirm_server_name").value = "";
+    if (action !== "dry-run") byId(confirmId).value = "";
     showStatus(result.message);
   } catch (e) { showStatus(e.message); }
 }
 byId("dispatch").onclick = () => dispatch("dry-run");
 byId("apply").onclick = () => dispatch("apply");
 byId("rollback").onclick = () => dispatch("rollback");
+byId("hard_reset").onclick = () => {
+  if (!window.confirm("Hard Reset (Player Data only): remove every character, restart at day 1, and remove all safehouses and factions on the next server start?\n\nThe server must be stopped. This can be undone with Undo latest hard reset.")) return;
+  dispatch("hard-reset", "hard_confirm_server_name");
+};
+byId("hard_reset_undo").onclick = () => {
+  if (!window.confirm("Undo the latest hard reset? Characters, day count, safehouses, factions and claims come back; building changes and every mod's saved data changed since the hard reset are lost.\n\nThe server must be stopped.")) return;
+  dispatch("hard-reset-undo", "hard_confirm_server_name");
+};
 async function loadConfig() {
   const r = await fetch("/api/config"); if (!r.ok) return;
   const data = await r.json();

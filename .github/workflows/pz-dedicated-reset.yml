@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: What to run. Stop the server in the Pine Hosting panel before apply or rollback. "scheduled" is used by cron-job.org and only runs inside the reset window.
+        description: What to run. Stop the server in the Pine Hosting panel before apply, rollback or hard reset. "scheduled" is used by cron-job.org and only runs inside the reset window. "hard-reset" removes all characters and restarts at day 1.
         required: true
         type: choice
         options:
@@ -14,9 +14,11 @@ on:
           - rollback
           - benchmark
           - scheduled
+          - hard-reset
+          - hard-reset-undo
         default: dry-run
       confirm_server_name:
-        description: For apply or rollback, type the server name exactly as configured
+        description: For apply, rollback or hard reset, type the server name exactly as configured
         required: false
         type: string
         default: ''

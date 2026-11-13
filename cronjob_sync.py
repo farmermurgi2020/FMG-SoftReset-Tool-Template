@@ -100,6 +100,12 @@ def _request(api_key: str, method: str, path: str, payload: dict[str, Any] | Non
         return {}
 
 
+def _find_job(api_key: str, url: str, request: Callable[..., dict[str, Any]]) -> int | None:
+    """Id of the job that calls url (the workflow's dispatch address), or None."""
+    jobs = request(api_key, "GET", "/jobs").get("jobs", [])
+    return next((int(job["jobId"]) for job in jobs if job.get("url") == url), None)
+
+
 def sync_cronjob(
     api_key: str,
     github_token: str,
@@ -112,10 +118,9 @@ def sync_cronjob(
 ) -> str:
     """Create or update the job for owner/repo. Returns a one-line summary for the dashboard."""
     url = dispatch_url(owner, repo)
-    jobs = request(api_key, "GET", "/jobs").get("jobs", [])
-    existing = next((job for job in jobs if job.get("url") == url), None)
+    job_id = _find_job(api_key, url, request)
 
-    if not enabled and existing is None:
+    if not enabled and job_id is None:
         return "cron-job.org: no job exists and scheduled runs are off, so nothing was created."
 
     job: dict[str, Any] = {
@@ -137,15 +142,15 @@ def sync_cronjob(
             },
             "body": json.dumps({"ref": branch, "inputs": {"action": "scheduled", "confirm_server_name": ""}}),
         }
-    elif existing is None:
+    elif job_id is None:
         raise ConfigError("enter the GitHub fine-grained token for cron-job.org so the new job can start the workflow")
 
-    if existing is None:
+    if job_id is None:
         created = request(api_key, "PUT", "/jobs", {"job": job})
         verb = f"job created (id {created.get('jobId', '?')})"
     else:
-        request(api_key, "PATCH", f"/jobs/{int(existing['jobId'])}", {"job": job})
-        verb = f"job {int(existing['jobId'])} updated"
+        request(api_key, "PATCH", f"/jobs/{job_id}", {"job": job})
+        verb = f"job {job_id} updated"
         if "extendedData" not in job:
             verb += " (GitHub token kept)"
     state = describe_schedule(schedule) if enabled else "paused"
@@ -156,10 +161,8 @@ def pause_cronjob(
     api_key: str, owner: str, repo: str, request: Callable[..., dict[str, Any]] = _request
 ) -> str:
     """Pause the job when GitHub's own schedule is chosen, so the reset cannot run twice."""
-    url = dispatch_url(owner, repo)
-    jobs = request(api_key, "GET", "/jobs").get("jobs", [])
-    existing = next((job for job in jobs if job.get("url") == url), None)
-    if existing is None:
+    job_id = _find_job(api_key, dispatch_url(owner, repo), request)
+    if job_id is None:
         return "cron-job.org: no job to pause."
-    request(api_key, "PATCH", f"/jobs/{int(existing['jobId'])}", {"job": {"enabled": False}})
-    return f"cron-job.org: job {int(existing['jobId'])} paused (GitHub schedule is selected)."
+    request(api_key, "PATCH", f"/jobs/{job_id}", {"job": {"enabled": False}})
+    return f"cron-job.org: job {job_id} paused (GitHub schedule is selected)."

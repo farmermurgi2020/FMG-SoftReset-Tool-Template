@@ -12,7 +12,9 @@ from config import CONFIG_PATH, ROOT, ConfigError, load_config
 from schedule import github_cron_for, occurrence_on_or_after, validate_timezone
 
 
-MODES = ("scheduled", "dry-run", "apply", "rollback", "benchmark")
+# Also the options of the workflow's "Run workflow" dropdown (dedicated_web_ui._workflow_text).
+MODES = ("dry-run", "apply", "rollback", "benchmark", "scheduled", "hard-reset", "hard-reset-undo")
+HARD_RESET_MODES = {"hard-reset": "--apply", "hard-reset-undo": "--undo"}
 
 
 def _scheduled_window_is_open(config: dict) -> tuple[bool, str]:
@@ -58,7 +60,40 @@ def _inside_provider_window(now: datetime, schedule: dict) -> bool:
     return minute >= stop_minute + buffer or minute <= start_minute - buffer
 
 
+def _hard_reset_summary(action: str, plan: dict, succeeded: bool) -> list[str]:
+    if action == "hard-reset":
+        title = "hard reset applied (player data)" if succeeded else "hard reset FAILED"
+    else:
+        title = "hard reset undone" if succeeded else "hard reset undo FAILED"
+    lines = [f"## FMG Dedicated Soft Reset — {title}", "", f"- Server: `{plan.get('server', 'unknown')}`"]
+    if not succeeded:
+        return lines + ["", "See the job log for the error. Files that were moved are put back when a step fails."]
+    if action == "hard-reset":
+        characters = plan.get("characters")
+        safehouses = plan.get("safehouses")
+        lines.append(f"- Characters removed: {'unknown' if characters is None else characters}")
+        lines.append("- World clock: back to day 1")
+        lines.append(f"- Safehouses to remove on next server start: {'unknown' if safehouses is None else safehouses}"
+                     " (plus all factions), done by the FMGResetTool mod")
+        lines += ["", "| Moved out | What it holds | Files |", "|---|---|---|"]
+        for item in plan.get("items", []):
+            lines.append(f"| `{item['name']}` | {item['label']} | {item['files']} |")
+        lines += ["", f"- Kept for undo at: `{plan.get('remote_rollback_dir')}`",
+                  "- Not touched: map chunks, zpop, apop, vehicles, accounts, admin roles."]
+    else:
+        lines.append(f"- Restored from: `{plan.get('restored_from')}` ({', '.join(plan.get('restored_entries', []))})")
+        lines.append(f"- Replaced state kept at: `{plan.get('remote_rollback_dir')}` (undo again to reverse)")
+    return lines
+
+
 def _write_summary(path: Path, action: str, plan: dict, succeeded: bool) -> None:
+    lines = (_hard_reset_summary(action, plan, succeeded) if action in HARD_RESET_MODES
+             else _reset_summary(action, plan, succeeded))
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+
+
+def _reset_summary(action: str, plan: dict, succeeded: bool) -> list[str]:
     title = {
         "dry-run": "read-only plan",
         "apply": "reset applied" if succeeded else "reset FAILED",
@@ -99,8 +134,7 @@ def _write_summary(path: Path, action: str, plan: dict, succeeded: bool) -> None
         lines.append("This run did not modify the server save.")
     elif not succeeded:
         lines.append("See the job log for the error. The worker restores the original folders when a swap fails.")
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write("\n".join(lines) + "\n")
+    return lines
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -116,13 +150,17 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(CONFIG_PATH)
         if config["server"].get("connection_mode") != "sftp":
             raise ConfigError("dedicated workflow requires connection_mode='sftp'")
+        env = os.environ.copy()
+        env["PZRESET_CONFIG"] = str(CONFIG_PATH)
         if args.mode == "benchmark":
-            env = os.environ.copy()
-            env["PZRESET_CONFIG"] = str(CONFIG_PATH)
             print(f"Running read-only SFTP benchmark for {config['server']['name']}.", flush=True)
             return subprocess.run([sys.executable, str(ROOT / "benchmark.py")], cwd=ROOT, env=env, check=False).returncode
+        action = args.mode
         command = [sys.executable, str(ROOT / "worker.py")]
-        if args.mode == "scheduled":
+        if action in HARD_RESET_MODES:
+            command = [sys.executable, str(ROOT / "hard_reset_remote.py"), HARD_RESET_MODES[action],
+                       "--confirm-server-name", args.confirm_server_name]
+        elif args.mode == "scheduled":
             allowed, message = _scheduled_window_is_open(config)
             print(message, flush=True)
             if not allowed:
@@ -130,7 +168,6 @@ def main(argv: list[str] | None = None) -> int:
             action = config.get("dedicated_settings", {}).get("scheduled_action", "dry-run")
             command += ["--apply", "--scheduled"] if action == "apply" else ["--dry-run"]
         else:
-            action = args.mode
             if action == "dry-run":
                 command.append("--dry-run")
             else:
@@ -139,8 +176,6 @@ def main(argv: list[str] | None = None) -> int:
 
         plan_path = ROOT / "reset-plan.json"
         plan_path.unlink(missing_ok=True)
-        env = os.environ.copy()
-        env["PZRESET_CONFIG"] = str(CONFIG_PATH)
         result = subprocess.run(command, cwd=ROOT, env=env, check=False)
         succeeded = result.returncode == 0
         plan = {"server": config["server"]["name"], "build": config["world"]["build"]}
