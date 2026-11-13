@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from config import ROOT, ConfigError, validate_config
+from cronjob_sync import pause_cronjob, sync_cronjob
 from schedule import github_cron_lines
 
 
@@ -79,12 +80,16 @@ def _save_local_settings(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[
     scheduled_action = str(payload.get("scheduled_action", "dry-run"))
     if scheduled_action not in {"dry-run", "apply"}:
         raise ConfigError("scheduled action must be dry-run or apply")
+    scheduled_trigger = str(payload.get("scheduled_trigger", "github"))
+    if scheduled_trigger not in {"cronjob", "github"}:
+        raise ConfigError("scheduled runs must be started by cron-job.org or the GitHub schedule")
     config["dedicated_settings"] = {
         "enabled": True,
         "reset_targets": target_settings,
         "target_modes": target_modes,
         "schedule": schedule_settings,
         "scheduled_action": scheduled_action,
+        "scheduled_trigger": scheduled_trigger,
     }
     config["reset_targets"] = copy.deepcopy(target_settings)
     config["schedule"] = copy.deepcopy(schedule_settings)
@@ -183,9 +188,14 @@ def _put_repo_file(
     _api_request(token, "PUT", _repo_path(owner, repo, f"/contents/{encoded_path}"), body)
 
 
-def _workflow_text(schedule: dict[str, Any]) -> str:
+def _workflow_text(schedule: dict[str, Any], github_schedule: bool = True) -> str:
     schedule_block = ""
-    if schedule["enabled"]:
+    # Only GitHub's UTC cron needs the daylight-saving line check; cron-job.org uses local time.
+    schedule_env = "          PZ_SCHEDULE_CRON: ${{ github.event.schedule }}\n" if github_schedule else ""
+    if not github_schedule:
+        # cron-job.org starts scheduled runs; a GitHub schedule as well could reset twice.
+        schedule_block = "  # Scheduled runs are started by cron-job.org (Run workflow, action: scheduled).\n"
+    elif schedule["enabled"]:
         # GitHub Actions runs cron in UTC only, so the local time is converted here.
         lines = "".join(f"    - cron: '{cron}'\n" for cron in github_cron_lines(schedule))
         schedule_block = (
@@ -195,13 +205,13 @@ def _workflow_text(schedule: dict[str, Any]) -> str:
             f"{lines}"
         )
     return f'''name: FMG Dedicated Soft Reset
-run-name: "FMG Soft Reset: ${{{{ github.event_name == 'schedule' && 'scheduled run' || inputs.action }}}}"
+run-name: "FMG Soft Reset: ${{{{ github.event_name == 'schedule' && 'scheduled run (GitHub schedule)' || inputs.action == 'scheduled' && 'scheduled run (cron-job.org)' || inputs.action }}}}"
 
 on:
 {schedule_block}  workflow_dispatch:
     inputs:
       action:
-        description: What to run. Stop the server in the Pine Hosting panel before apply or rollback.
+        description: What to run. Stop the server in the Pine Hosting panel before apply or rollback. "scheduled" is used by cron-job.org and only runs inside the reset window.
         required: true
         type: choice
         options:
@@ -209,6 +219,7 @@ on:
           - apply
           - rollback
           - benchmark
+          - scheduled
         default: dry-run
       confirm_server_name:
         description: For apply or rollback, type the server name exactly as configured
@@ -258,8 +269,7 @@ jobs:
           PZRESET_SFTP_KEY_PASSPHRASE: ${{{{ secrets.PZRESET_SFTP_KEY_PASSPHRASE }}}}
           PZ_MODE: ${{{{ github.event_name == 'schedule' && 'scheduled' || inputs.action }}}}
           PZ_CONFIRM: ${{{{ inputs.confirm_server_name }}}}
-          PZ_SCHEDULE_CRON: ${{{{ github.event.schedule }}}}
-        run: python dedicated_workflow.py --mode "$PZ_MODE" --confirm-server-name "$PZ_CONFIRM"
+{schedule_env}        run: python dedicated_workflow.py --mode "$PZ_MODE" --confirm-server-name "$PZ_CONFIRM"
       - name: Keep the run's plan or result
         if: always()
         uses: actions/upload-artifact@v4
@@ -289,7 +299,38 @@ def _sync_secret(token: str, owner: str, repo: str, name: str, value: str) -> No
     )
 
 
-def _sync_to_github(config: dict[str, Any], preferences: dict[str, str], token: str, secrets: dict[str, str]) -> str:
+def _sync_cronjob_side(
+    config: dict[str, Any], preferences: dict[str, str], cronjob: dict[str, Any]
+) -> str:
+    owner, repo, branch = preferences["owner"], preferences["repo"], preferences["branch"]
+    settings = config["dedicated_settings"]
+    api_key = str(cronjob.get("api_key", "")).strip()
+    github_token = str(cronjob.get("github_token", "")).strip()
+    if settings.get("scheduled_trigger") != "cronjob":
+        return pause_cronjob(api_key, owner, repo) if api_key else ""
+    if not api_key:
+        return ("cron-job.org was not updated (no cron-job.org key entered). "
+                "Enter the key to create the job or change its time.")
+    if github_token:
+        # Check the token can see this repository's workflow before handing it to cron-job.org.
+        try:
+            _api_request(github_token, "GET", _repo_path(owner, repo, "/actions/workflows/pz-dedicated-reset.yml"))
+        except RuntimeError as exc:
+            raise ConfigError(
+                "the GitHub token for cron-job.org cannot read this repository's workflow "
+                f"({exc}); give it access to {owner}/{repo} with Actions: Read and write"
+            ) from None
+    schedule = settings["schedule"]
+    return sync_cronjob(api_key, github_token, owner, repo, branch, schedule, schedule["enabled"])
+
+
+def _sync_to_github(
+    config: dict[str, Any],
+    preferences: dict[str, str],
+    token: str,
+    secrets: dict[str, str],
+    cronjob: dict[str, Any] | None = None,
+) -> str:
     owner, repo, branch = preferences["owner"], preferences["repo"], preferences["branch"]
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+", repo):
         raise ConfigError("enter a valid GitHub owner and repository name")
@@ -304,7 +345,8 @@ def _sync_to_github(config: dict[str, Any], preferences: dict[str, str], token: 
             f"scheduled workflows must be synced to the repository default branch ({default_branch})"
         )
     config_json = (json.dumps(config, indent=2) + "\n").encode("utf-8")
-    workflow = _workflow_text(config["dedicated_settings"]["schedule"]).encode("utf-8")
+    github_schedule = config["dedicated_settings"].get("scheduled_trigger", "github") == "github"
+    workflow = _workflow_text(config["dedicated_settings"]["schedule"], github_schedule).encode("utf-8")
     _put_repo_file(token, owner, repo, branch, "dedicated-config.json", config_json, "Update dedicated reset settings")
     _put_repo_file(token, owner, repo, branch, WORKFLOW_PATH, workflow, "Update dedicated reset workflow")
 
@@ -324,7 +366,13 @@ def _sync_to_github(config: dict[str, Any], preferences: dict[str, str], token: 
         summary = "Encrypted GitHub Actions secrets updated: " + ", ".join(uploaded) + "."
     else:
         summary = "No secret fields were changed; existing GitHub Actions secrets were left untouched."
-    return f"Settings and workflow synced to {owner}/{repo} ({branch}). {summary} Scheduled runs: {config['dedicated_settings'].get('scheduled_action', 'dry-run')}."
+    message = (f"Settings and workflow synced to {owner}/{repo} ({branch}). {summary} "
+               f"Scheduled runs: {config['dedicated_settings'].get('scheduled_action', 'dry-run')}.")
+    try:
+        cronjob_summary = _sync_cronjob_side(config, preferences, cronjob or {})
+    except (ConfigError, RuntimeError, ValueError, KeyError) as exc:
+        raise RuntimeError(f"{message}\nBut the cron-job.org update failed: {exc}") from None
+    return f"{message}\n{cronjob_summary}" if cronjob_summary else message
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -389,6 +437,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     preferences,
                     str(payload.get("token", "")),
                     payload.get("credentials") or {},
+                    payload.get("cronjob") or {},
                 )
                 self._json(200, {"message": message})
                 return

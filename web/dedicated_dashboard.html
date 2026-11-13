@@ -91,6 +91,18 @@
   </section>
 
   <section class="card">
+    <h2>Cron-job keys</h2>
+    <p class="hint">GitHub's own schedule can start late, skip runs, or never fire for some accounts. cron-job.org (free) can instead press the workflow's "Run workflow" button at your reset time. Sync then creates or updates the cron-job.org job with the day, time and timezone set above, so you don't need to set it up on their site. A run started this way still checks the reset date, time, allowed lateness and Pine Hosting window, and does nothing outside them.</p>
+    <div class="grid">
+      <label>Scheduled runs are started by<select id="scheduled_trigger"><option value="cronjob">cron-job.org (recommended)</option><option value="github">GitHub's built-in schedule</option></select></label>
+      <span></span>
+      <label>cron-job.org API key<input id="cronjob_api_key" type="password" autocomplete="new-password" placeholder="cron-job.org → Settings → API"></label>
+      <label>Corresponding GitHub fine-grained token<input id="cronjob_github_token" type="password" autocomplete="new-password" placeholder="only this repository, Actions: Read and write"></label>
+    </div>
+    <p class="hint">The GitHub token here is stored inside the cron-job.org job, so give it the least access: only this repository, with <b>Actions: Read and write</b> and nothing else. Both keys are kept in memory for this page only and cleared after a successful sync. Leave them blank on later syncs: a blank cron-job.org key leaves the job untouched, and a blank GitHub token keeps the token already stored in the job. Choosing GitHub's built-in schedule with the cron-job.org key entered pauses the cron-job.org job so the reset cannot run twice.</p>
+  </section>
+
+  <section class="card">
     <div class="actions">
       <button class="secondary" id="save">Save on this PC</button>
       <button id="sync">Sync settings and credentials to GitHub</button>
@@ -124,6 +136,7 @@ function settingsFromForm() {
     },
     world: { build: value("build"), chunk_size: 8 },
     scheduled_action: value("scheduled_action"),
+    scheduled_trigger: value("scheduled_trigger"),
     target_modes: { map_chunks: value("mode_map_chunks"), zombie_population: value("mode_zombie_population"), animal_population: value("mode_animal_population") },
     schedule: {
       enabled: byId("schedule_enabled").checked, frequency: value("frequency"), anchor_date: value("anchor_date"),
@@ -154,8 +167,11 @@ byId("sync").onclick = async () => {
     const token = value("token");
     if (!token) throw new Error("Enter a fine-grained GitHub token for this sync.");
     sessionToken = token;
-    const result = await post("/api/sync", {...settingsFromForm(), token});
+    showStatus("Syncing…");
+    const cronjob = { api_key: value("cronjob_api_key"), github_token: value("cronjob_github_token") };
+    const result = await post("/api/sync", {...settingsFromForm(), token, cronjob});
     byId("sftp_password").value = ""; byId("private_key").value = ""; byId("key_passphrase").value = ""; byId("known_hosts").value = "";
+    byId("cronjob_api_key").value = ""; byId("cronjob_github_token").value = "";
     showStatus(result.message);
   } catch (e) { showStatus(e.message); }
 };
@@ -196,6 +212,7 @@ async function loadConfig() {
   const q = d.schedule || c.schedule || {};
   byId("schedule_enabled").checked = q.enabled === true;
   byId("scheduled_action").value = d.scheduled_action === "apply" ? "apply" : "dry-run";
+  byId("scheduled_trigger").value = d.scheduled_trigger === "github" ? "github" : "cronjob";
   for (const id of ["frequency","anchor_date","time","timezone","pine_stop_time","pine_start_time","minimum_start_buffer_minutes","allowed_lateness_minutes"]) if (q[id] !== undefined) byId(id).value = q[id];
 }
 loadConfig().catch(e => showStatus(e.message));

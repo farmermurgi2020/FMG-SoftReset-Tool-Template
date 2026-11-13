@@ -138,8 +138,10 @@ The dashboard only uses the token while the page is open; it is never saved.
    encrypted **Actions secrets**. They are never saved on your PC or committed
    to the repository.
 5. **Reset and schedule**: choose a reset mode per data type, the schedule and
-   your host's stop and start times. Then click **Sync settings and credentials
-   to GitHub**.
+   your host's stop and start times.
+6. **Cron-job keys** (for scheduled runs, see below): leave **Scheduled runs are
+   started by** on **cron-job.org (recommended)** and enter both keys. Then
+   click **Sync settings and credentials to GitHub**.
 
 ### Run it
 
@@ -158,6 +160,45 @@ The dashboard only uses the token while the page is open; it is never saved.
 You can also start runs from the **Actions** tab: choose **FMG Dedicated Soft
 Reset** → **Run workflow**, pick the action and type the server name.
 
+### Scheduled runs with cron-job.org (recommended)
+
+GitHub's built-in schedule can start late, skip runs, or never fire at all for
+some accounts. [cron-job.org](https://cron-job.org) is a free service that
+instead presses your workflow's **Run workflow** button at the reset time. You
+don't set anything up on their site: when you sync, the dashboard creates the
+job (or updates the same job) with the day, time and timezone from **Reset and
+schedule**. It uses your local time, so daylight saving time is handled for you.
+
+1. Create a free cron-job.org account. Under **Settings** → **API**, create an
+   API key. You can leave its IP allow-list empty.
+2. Create a second GitHub fine-grained token for cron-job.org with the least
+   access: **Repository access** only your private copy, **Repository
+   permissions** only **Actions: Read and write**. This token is stored inside
+   the cron-job.org job, which is why it is kept separate from your main token.
+3. In the dashboard's **Cron-job keys** section, choose **cron-job.org
+   (recommended)**, paste the **cron-job.org API key** and the **Corresponding
+   GitHub fine-grained token**, then sync. The status line shows, for example,
+   `cron-job.org: job created (id …), every Friday at 01:45 America/Toronto.`
+
+Good to know:
+
+- Each sync updates the same job; it never creates duplicates. On later syncs
+  you can leave both keys blank: a blank cron-job.org key leaves the job as it
+  is, and a blank GitHub token keeps the token already in the job. Enter the
+  cron-job.org key again whenever you change the schedule, so the job's time
+  is updated too.
+- A run started by cron-job.org shows as **scheduled run (cron-job.org)** in the
+  Actions tab. It does the same checks as any scheduled run (reset date, time,
+  allowed lateness and your host's stop/start window) and does nothing outside
+  them.
+- With cron-job.org selected, the workflow has no GitHub schedule, so a reset
+  can never run twice. Turning **Enable scheduled dedicated runs** off and
+  syncing with the key pauses the job; choosing GitHub's built-in schedule
+  instead pauses it too.
+- The keys are only kept in the page's memory and are cleared after a
+  successful sync. If a key leaks, delete it on cron-job.org or GitHub and
+  create a new one.
+
 The tool does **not** check whether the server is running, so always stop it
 first. No backup is kept on GitHub, so keep your host's own backups turned on.
 
@@ -171,7 +212,10 @@ first. No backup is kept on GitHub, so keep your host's own backups turned on.
 - Non-PvP zones are not treated as protected.
 - Build 42 only.
 - Private repositories on a free GitHub plan include 2,000 Actions minutes a
-  month, which is plenty for weekly resets.
+  month, which is plenty for weekly resets. After each apply, the previous
+  rollback folder is deleted. Over SFTP that takes time: about 45 minutes for
+  ~250,000 files on Pine Hosting. It runs after the new map is in place and
+  only touches the old rollback folder, so the server can start meanwhile.
 
 ## Updating
 
