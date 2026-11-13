@@ -18,6 +18,25 @@ class DesktopOverrideTests(unittest.TestCase):
         self.assertFalse(desktop_override_active({"desktop_settings": {"enabled": False}}, {}))
 
 
+class DedicatedModeSourceTests(unittest.TestCase):
+    def test_in_game_modes_never_drive_dedicated_runs(self):
+        from config import merge_exported_worker_settings, target_modes
+
+        path = Path(__file__).resolve().parents[1] / "dedicated-config.example.json"
+        config = json.loads(path.read_text(encoding="utf-8"))
+        validate_config(config)
+        config["dedicated_settings"].pop("target_modes", None)  # older dashboard config
+        export = {
+            "schemaVersion": 2, "schedule": {}, "safety": {},
+            "resetModes": {"mapChunks": "reset_all", "zombiePopulation": "reset_all", "animalPopulation": "reset_all"},
+        }
+        merge_exported_worker_settings(config, export)
+        self.assertEqual(
+            target_modes(config),
+            {"map_chunks": "protect", "zombie_population": "skip", "animal_population": "skip"},
+        )
+
+
 class ConfigTests(unittest.TestCase):
     def setUp(self):
         path = Path(__file__).resolve().parents[1] / "config.example.json"

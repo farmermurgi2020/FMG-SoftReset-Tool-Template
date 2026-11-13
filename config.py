@@ -149,6 +149,8 @@ def merge_exported_worker_settings(config: dict[str, Any], export: dict[str, Any
         if not isinstance(targets, dict) or not isinstance(schedule_override, dict):
             raise ConfigError("enabled dedicated settings must contain reset_targets and schedule")
         merged["reset_targets"] = deepcopy(targets)
+        # Dedicated runs follow the dedicated dashboard only, never the in-game panel's modes.
+        merged.pop("target_modes", None)
         merged["schedule"].update(deepcopy(schedule_override))
         # The first GitHub-hosted dedicated workflow is plan-only.
         merged["safety"]["apply_enabled"] = False
