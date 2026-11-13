@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import calendar
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any
 
@@ -61,6 +61,47 @@ def occurrence_on_or_after(schedule: dict[str, Any], from_date: date) -> date:
         candidate = _monthly_date(anchor, month_offset)
         return candidate if candidate >= from_date else _monthly_date(anchor, month_offset + 1)
     raise ConfigError(f"unsupported schedule frequency: {frequency}")
+
+
+def _utc_cron(schedule: dict[str, Any], local_due: datetime) -> str:
+    """GitHub cron line (UTC) that fires at local_due's wall-clock time."""
+    utc = local_due.astimezone(dt_timezone.utc)
+    day_shift = (utc.date() - local_due.date()).days
+    frequency = schedule["frequency"]
+    if frequency == "daily":
+        day, weekday = "*", "*"
+    elif frequency == "weekly":
+        day, weekday = "*", str((utc.weekday() + 1) % 7)  # cron: Sunday = 0
+    elif frequency == "monthly":
+        anchor_day = date.fromisoformat(schedule["anchor_date"]).day
+        if anchor_day <= 27 and 1 <= anchor_day + day_shift <= 27:
+            day = str(anchor_day + day_shift)
+        elif day_shift == 0:
+            day = "28-31"  # short months clamp to their last day
+        else:
+            day = "*"  # end-of-month date that crosses midnight in UTC; the worker skips other days
+        weekday = "*"
+    else:
+        raise ConfigError(f"unsupported schedule frequency: {frequency}")
+    return f"{utc.minute} {utc.hour} {day} * {weekday}"
+
+
+def github_cron_lines(schedule: dict[str, Any]) -> list[str]:
+    """UTC cron lines for GitHub Actions, which ignores timezones.
+
+    Zones with daylight saving time get one line per UTC offset (for example EST and EDT);
+    the workflow only proceeds on the line matching the offset in effect on the reset date.
+    """
+    zone = validate_timezone(schedule["timezone"])
+    run_time = time.fromisoformat(schedule["time"])
+    anchor = date.fromisoformat(schedule["anchor_date"])
+    samples = (datetime.combine(anchor + timedelta(weeks=week), run_time, tzinfo=zone) for week in range(53))
+    return sorted({_utc_cron(schedule, sample) for sample in samples})
+
+
+def github_cron_for(schedule: dict[str, Any], local_due: datetime) -> str:
+    """The cron line that should trigger the occurrence at local_due."""
+    return _utc_cron(schedule, local_due)
 
 
 def next_run(schedule: dict[str, Any], now: datetime | None = None) -> datetime:

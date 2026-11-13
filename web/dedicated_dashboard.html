@@ -85,7 +85,7 @@
       <label>Pine Hosting stop time<input id="pine_stop_time" type="time" value="02:00"></label>
       <label>Pine Hosting start time<input id="pine_start_time" type="time" value="06:00"></label>
       <label>Start buffer (minutes)<input id="minimum_start_buffer_minutes" type="number" min="0" max="1440" value="30"></label>
-      <label>Allowed lateness (minutes)<input id="allowed_lateness_minutes" type="number" min="0" max="1440" value="10"></label>
+      <label>Allowed lateness (minutes)<input id="allowed_lateness_minutes" type="number" min="0" max="1440" value="30"></label>
     </div>
     <p class="warning">The worker does not check whether the server is running. Scheduled apply relies on your Pine Hosting power schedule stopping the server before the reset time and starting it after the window. Keep scheduled runs on dry run until a manual apply and rollback have been tested.</p>
   </section>

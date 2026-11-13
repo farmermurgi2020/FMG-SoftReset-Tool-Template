@@ -62,6 +62,7 @@ jobs:
           PZRESET_SFTP_KEY_PASSPHRASE: ${{ secrets.PZRESET_SFTP_KEY_PASSPHRASE }}
           PZ_MODE: ${{ github.event_name == 'schedule' && 'scheduled' || inputs.action }}
           PZ_CONFIRM: ${{ inputs.confirm_server_name }}
+          PZ_SCHEDULE_CRON: ${{ github.event.schedule }}
         run: python dedicated_workflow.py --mode "$PZ_MODE" --confirm-server-name "$PZ_CONFIRM"
       - name: Keep the run's plan or result
         if: always()

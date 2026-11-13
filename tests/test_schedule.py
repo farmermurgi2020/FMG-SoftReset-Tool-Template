@@ -64,5 +64,77 @@ class ScheduleTests(unittest.TestCase):
                                    date(2026, 1, 1))
 
 
+class GithubCronTests(unittest.TestCase):
+    def _schedule(self, **values):
+        schedule = {"frequency": "weekly", "anchor_date": "2026-11-13", "time": "01:00", "timezone": "America/Toronto"}
+        schedule.update(values)
+        return schedule
+
+    def test_toronto_weekly_gets_est_and_edt_lines_in_utc(self):
+        from schedule import github_cron_lines
+
+        # Friday 01:00 Toronto = Friday 06:00 UTC in winter (EST), 05:00 UTC in summer (EDT).
+        self.assertEqual(github_cron_lines(self._schedule()), ["0 5 * * 5", "0 6 * * 5"])
+
+    def test_crossing_midnight_moves_the_weekday(self):
+        from schedule import github_cron_lines
+
+        # Tuesday 22:30 Toronto is Wednesday 02:30/03:30 UTC.
+        lines = github_cron_lines(self._schedule(anchor_date="2026-11-10", time="22:30"))
+        self.assertEqual(lines, ["30 2 * * 3", "30 3 * * 3"])
+
+    def test_zone_without_daylight_saving_gets_one_line(self):
+        from schedule import github_cron_lines
+
+        self.assertEqual(github_cron_lines(self._schedule(timezone="UTC")), ["0 1 * * 5"])
+        self.assertEqual(github_cron_lines(self._schedule(frequency="daily", timezone="UTC")), ["0 1 * * *"])
+
+    def test_only_the_matching_offset_line_proceeds(self):
+        from zoneinfo import ZoneInfo
+        from schedule import github_cron_for
+
+        zone = ZoneInfo("America/Toronto")
+        winter = datetime(2026, 11, 20, 1, 0, tzinfo=zone)
+        summer = datetime(2027, 7, 2, 1, 0, tzinfo=zone)
+        self.assertEqual(github_cron_for(self._schedule(), winter), "0 6 * * 5")
+        self.assertEqual(github_cron_for(self._schedule(), summer), "0 5 * * 5")
+
+    def test_workflow_skips_the_other_offsets_trigger(self):
+        import os
+        from unittest.mock import patch
+        from zoneinfo import ZoneInfo
+
+        import dedicated_workflow
+
+        schedule = self._schedule(
+            enabled=True, pine_stop_time="00:45", pine_start_time="01:45",
+            minimum_start_buffer_minutes=5, allowed_lateness_minutes=30,
+        )
+        config = {"schedule": schedule, "dedicated_settings": {"schedule": schedule}}
+        now = datetime(2026, 11, 13, 1, 5, tzinfo=ZoneInfo("America/Toronto"))
+
+        class FakeDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now.astimezone(tz)
+
+        with patch.object(dedicated_workflow, "datetime", FakeDatetime):
+            with patch.dict(os.environ, {"PZ_SCHEDULE_CRON": "0 5 * * 5"}):
+                allowed, message = dedicated_workflow._scheduled_window_is_open(config)
+            self.assertFalse(allowed)
+            self.assertIn("other daylight-saving offset", message)
+            with patch.dict(os.environ, {"PZ_SCHEDULE_CRON": "0 6 * * 5"}):
+                allowed, _ = dedicated_workflow._scheduled_window_is_open(config)
+            self.assertTrue(allowed)
+
+    def test_workflow_text_has_utc_lines_and_no_timezone_key(self):
+        from dedicated_web_ui import _workflow_text
+
+        text = _workflow_text(self._schedule(enabled=True))
+        self.assertIn("    - cron: '0 5 * * 5'\n    - cron: '0 6 * * 5'\n", text)
+        self.assertNotIn("timezone:", text)
+        self.assertIn("PZ_SCHEDULE_CRON: ${{ github.event.schedule }}", text)
+
+
 if __name__ == "__main__":
     unittest.main()

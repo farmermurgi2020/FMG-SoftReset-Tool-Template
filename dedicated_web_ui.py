@@ -10,12 +10,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
-from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
 from config import ROOT, ConfigError, validate_config
+from schedule import github_cron_lines
 
 
 HTML_PATH = ROOT / "web" / "dedicated_dashboard.html"
@@ -74,7 +74,7 @@ def _save_local_settings(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[
         "pine_stop_time": str(schedule.get("pine_stop_time", "")),
         "pine_start_time": str(schedule.get("pine_start_time", "")),
         "minimum_start_buffer_minutes": int(schedule.get("minimum_start_buffer_minutes", 30)),
-        "allowed_lateness_minutes": int(schedule.get("allowed_lateness_minutes", 10)),
+        "allowed_lateness_minutes": int(schedule.get("allowed_lateness_minutes", 30)),
     }
     scheduled_action = str(payload.get("scheduled_action", "dry-run"))
     if scheduled_action not in {"dry-run", "apply"}:
@@ -183,30 +183,16 @@ def _put_repo_file(
     _api_request(token, "PUT", _repo_path(owner, repo, f"/contents/{encoded_path}"), body)
 
 
-def _cron_expression(schedule: dict[str, Any]) -> str:
-    hour, minute = (int(value) for value in schedule["time"].split(":"))
-    frequency = schedule["frequency"]
-    if frequency == "daily":
-        day, weekday = "*", "*"
-    elif frequency == "weekly":
-        anchor = date.fromisoformat(schedule["anchor_date"])
-        day, weekday = "*", str((anchor.weekday() + 1) % 7)
-    else:
-        anchor = date.fromisoformat(schedule["anchor_date"])
-        day = str(anchor.day) if anchor.day <= 27 else "28-31"
-        weekday = "*"
-    return f"{minute} {hour} {day} * {weekday}"
-
-
 def _workflow_text(schedule: dict[str, Any]) -> str:
     schedule_block = ""
     if schedule["enabled"]:
-        cron = _cron_expression(schedule)
-        timezone = schedule["timezone"]
+        # GitHub Actions runs cron in UTC only, so the local time is converted here.
+        lines = "".join(f"    - cron: '{cron}'\n" for cron in github_cron_lines(schedule))
         schedule_block = (
+            f"  # {schedule['time']} {schedule['timezone']}, written in UTC"
+            " (one line per daylight-saving offset)\n"
             "  schedule:\n"
-            f"    - cron: '{cron}'\n"
-            f"      timezone: '{timezone}'\n"
+            f"{lines}"
         )
     return f'''name: FMG Dedicated Soft Reset
 run-name: "FMG Soft Reset: ${{{{ github.event_name == 'schedule' && 'scheduled run' || inputs.action }}}}"
@@ -272,6 +258,7 @@ jobs:
           PZRESET_SFTP_KEY_PASSPHRASE: ${{{{ secrets.PZRESET_SFTP_KEY_PASSPHRASE }}}}
           PZ_MODE: ${{{{ github.event_name == 'schedule' && 'scheduled' || inputs.action }}}}
           PZ_CONFIRM: ${{{{ inputs.confirm_server_name }}}}
+          PZ_SCHEDULE_CRON: ${{{{ github.event.schedule }}}}
         run: python dedicated_workflow.py --mode "$PZ_MODE" --confirm-server-name "$PZ_CONFIRM"
       - name: Keep the run's plan or result
         if: always()

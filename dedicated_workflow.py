@@ -9,7 +9,7 @@ from datetime import datetime, time
 from pathlib import Path
 
 from config import CONFIG_PATH, ROOT, ConfigError, load_config
-from schedule import occurrence_on_or_after, validate_timezone
+from schedule import github_cron_for, occurrence_on_or_after, validate_timezone
 
 
 MODES = ("scheduled", "dry-run", "apply", "rollback", "benchmark")
@@ -26,6 +26,13 @@ def _scheduled_window_is_open(config: dict) -> tuple[bool, str]:
     if due_date != now.date():
         return False, "Today is not a configured reset date; skipping this workflow occurrence."
     due = datetime.combine(due_date, time.fromisoformat(schedule["time"]), tzinfo=timezone)
+    trigger = os.environ.get("PZ_SCHEDULE_CRON", "").strip()
+    expected = github_cron_for(schedule, due)
+    if trigger and trigger != expected:
+        return False, (
+            f"Started by cron '{trigger}', but today's reset belongs to '{expected}' "
+            f"(the other daylight-saving offset of {schedule['timezone']}); skipping."
+        )
     elapsed = (now - due).total_seconds()
     allowed = int(schedule["allowed_lateness_minutes"]) * 60
     if elapsed < -60:

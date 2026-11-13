@@ -43,7 +43,7 @@
       "pine_stop_time": "02:00",
       "pine_start_time": "06:00",
       "minimum_start_buffer_minutes": 30,
-      "allowed_lateness_minutes": 10
+      "allowed_lateness_minutes": 30
     }
   },
   "schedule": {
@@ -55,7 +55,7 @@
     "pine_stop_time": "02:00",
     "pine_start_time": "06:00",
     "minimum_start_buffer_minutes": 30,
-    "allowed_lateness_minutes": 10
+    "allowed_lateness_minutes": 30
   },
   "safety": {
     "apply_enabled": false,
