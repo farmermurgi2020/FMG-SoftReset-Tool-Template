@@ -1,0 +1,70 @@
+{
+  "server": {
+    "connection_mode": "sftp",
+    "name": "pinhosting-pz",
+    "save_dir": "/SET/REMOTE/SAVE/DIRECTORY",
+    "zone_export": "/SET/REMOTE/PATH/pz-reset-zones.json",
+    "sftp_host": "",
+    "sftp_port": 22,
+    "sftp_username": "",
+    "sftp_key_file": "",
+    "offline_probe": {
+      "type": "unconfigured",
+      "host": "",
+      "port": null,
+      "verified": false
+    }
+  },
+  "world": {
+    "build": "SET_BUILD_FROM_ZONE_EXPORT",
+    "chunk_size": 8
+  },
+  "reset_targets": {
+    "map_chunks": true,
+    "zombie_population": false,
+    "animal_population": false
+  },
+  "desktop_settings": {
+    "enabled": false
+  },
+  "dedicated_settings": {
+    "enabled": true,
+    "reset_targets": {
+      "map_chunks": true,
+      "zombie_population": false,
+      "animal_population": false
+    },
+    "schedule": {
+      "enabled": false,
+      "frequency": "weekly",
+      "anchor_date": "2026-11-10",
+      "time": "03:00",
+      "timezone": "America/Toronto",
+      "pine_stop_time": "02:00",
+      "pine_start_time": "06:00",
+      "minimum_start_buffer_minutes": 30,
+      "allowed_lateness_minutes": 10
+    }
+  },
+  "schedule": {
+    "enabled": false,
+    "frequency": "weekly",
+    "anchor_date": "2026-11-10",
+    "time": "03:00",
+    "timezone": "America/Toronto",
+    "pine_stop_time": "02:00",
+    "pine_start_time": "06:00",
+    "minimum_start_buffer_minutes": 30,
+    "allowed_lateness_minutes": 10
+  },
+  "safety": {
+    "apply_enabled": false,
+    "approved_build": "",
+    "approved_chunk_layout": "",
+    "staging_and_rollback_tested": false,
+    "offline_probe_repetitions": 3,
+    "offline_probe_interval_seconds": 10,
+    "file_stability_seconds": 120,
+    "backup_dir": "backups"
+  }
+}

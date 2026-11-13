@@ -1,0 +1,73 @@
+name: FMG Dedicated Soft Reset
+run-name: "FMG Soft Reset: ${{ github.event_name == 'schedule' && 'scheduled run' || inputs.action }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to run. Stop the server in the Pine Hosting panel before apply or rollback.
+        required: true
+        type: choice
+        options:
+          - dry-run
+          - apply
+          - rollback
+          - benchmark
+        default: dry-run
+      confirm_server_name:
+        description: For apply or rollback, type the server name exactly as configured
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fmg-dedicated-reset
+  cancel-in-progress: false
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install worker dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Prepare optional SSH authentication and host-key files
+        shell: bash
+        env:
+          PZ_SFTP_PRIVATE_KEY: ${{ secrets.PZRESET_SFTP_PRIVATE_KEY }}
+          PZ_SFTP_KNOWN_HOSTS: ${{ secrets.PZRESET_SFTP_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          if [ -n "$PZ_SFTP_PRIVATE_KEY" ]; then
+            printf '%s\n' "$PZ_SFTP_PRIVATE_KEY" > "$RUNNER_TEMP/pz-sftp-key"
+            echo "PZRESET_SFTP_KEY_FILE=$RUNNER_TEMP/pz-sftp-key" >> "$GITHUB_ENV"
+          fi
+          if [ -n "$PZ_SFTP_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$PZ_SFTP_KNOWN_HOSTS" > "$RUNNER_TEMP/pz-known-hosts"
+            echo "PZRESET_SFTP_KNOWN_HOSTS=$RUNNER_TEMP/pz-known-hosts" >> "$GITHUB_ENV"
+          fi
+      - name: Run soft reset worker
+        shell: bash
+        env:
+          PZRESET_CONFIG: dedicated-config.json
+          PZRESET_SFTP_PASSWORD: ${{ secrets.PZRESET_SFTP_PASSWORD }}
+          PZRESET_SFTP_KEY_PASSPHRASE: ${{ secrets.PZRESET_SFTP_KEY_PASSPHRASE }}
+          PZ_MODE: ${{ github.event_name == 'schedule' && 'scheduled' || inputs.action }}
+          PZ_CONFIRM: ${{ inputs.confirm_server_name }}
+        run: python dedicated_workflow.py --mode "$PZ_MODE" --confirm-server-name "$PZ_CONFIRM"
+      - name: Keep the run's plan or result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reset-plan-${{ github.run_id }}
+          path: reset-plan.json
+          if-no-files-found: ignore
+          retention-days: 30

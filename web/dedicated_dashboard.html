@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FMG Soft Reset Tool — Dedicated</title>
+  <style>
+    :root { color-scheme: dark; font: 15px "Segoe UI", sans-serif; background:#101821; color:#e7eef5; }
+    body { max-width: 980px; margin: 28px auto; padding: 0 18px 50px; }
+    h1 { margin-bottom: 4px; } h2 { font-size:18px; margin:0 0 14px; }
+    p, .hint { color:#afbdca; line-height:1.5; }
+    .card { background:#192532; border:1px solid #344658; border-radius:9px; padding:18px; margin:16px 0; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 18px; }
+    label { display:block; font-size:13px; color:#c4d1dd; }
+    input, select, textarea { box-sizing:border-box; width:100%; padding:9px; margin-top:5px; color:#edf4fa; background:#0f1821; border:1px solid #52677b; border-radius:5px; }
+    textarea { min-height:92px; resize:vertical; }
+    .secret { -webkit-text-security:disc; }
+    .check { display:flex; align-items:center; gap:8px; margin:8px 0; }
+    .check input { width:auto; margin:0; }
+    .actions { display:flex; gap:10px; flex-wrap:wrap; }
+    button { border:0; border-radius:5px; padding:10px 15px; color:#fff; background:#1769aa; cursor:pointer; font-weight:600; }
+    button.secondary { background:#415466; } button:disabled { opacity:.5; cursor:not-allowed; }
+    .warning { border-left:4px solid #f1b54a; padding-left:12px; }
+    #status { white-space:pre-wrap; padding:10px; min-height:22px; background:#0f1821; border-radius:5px; }
+    @media (max-width:680px) { .grid { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <h1>FMG Soft Reset Tool — Dedicated</h1>
+  <p>Local settings page. Settings are saved to this PC and can be synced to a private GitHub repository. SFTP secrets are sent encrypted to GitHub and are never written to the local settings file.</p>
+
+  <section class="card">
+    <h2>GitHub destination</h2>
+    <div class="grid">
+      <label>Repository owner<input id="owner" autocomplete="off" placeholder="account or organization"></label>
+      <label>Private repository<input id="repo" autocomplete="off" placeholder="repository name"></label>
+      <label>Branch<input id="branch" value="main" autocomplete="off"></label>
+      <label>Fine-grained token<input id="token" type="password" autocomplete="off" placeholder="entered for this page session only"></label>
+    </div>
+    <p class="hint">For Sync and Run dry-run, create a fine-grained token limited to this private repository with Contents, Workflows, Actions, and Secrets write permissions. The page keeps it in memory only. Never paste it into chat or a config file.</p>
+  </section>
+
+  <section class="card">
+    <h2>Pine Hosting SFTP and save paths</h2>
+    <div class="grid">
+      <label>SFTP host<input id="sftp_host" autocomplete="off"></label>
+      <label>SFTP port<input id="sftp_port" type="number" min="1" max="65535" value="22"></label>
+      <label>SFTP username<input id="sftp_username" autocomplete="off"></label>
+      <label>Server name<input id="name" value="pinhosting-pz"></label>
+      <label>Remote save directory<input id="save_dir" placeholder="/home/.../Zomboid/Saves/Multiplayer/servertest"></label>
+      <label>Remote zone export path<input id="zone_export" placeholder="/home/.../Zomboid/Lua/pz-reset-zones.json"></label>
+      <label>Build identifier<input id="build" placeholder="exact build value from pz-reset-zones.json"></label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>SFTP credentials (optional on later syncs)</h2>
+    <p class="hint">Use the Pine Hosting SFTP password, or a private key if SSH key login is configured. The private key and passphrase are optional. The known_hosts line is also optional: if supplied, the worker verifies the server against it; if blank, it accepts an unpinned host key. Blank fields keep previously saved GitHub secrets unchanged.</p>
+    <div class="grid">
+      <label>SFTP password<input id="sftp_password" type="password" autocomplete="new-password"></label>
+      <label>Private key passphrase<input id="key_passphrase" type="password" autocomplete="new-password"></label>
+    </div>
+    <label>Private key<textarea id="private_key" class="secret" autocomplete="off" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
+    <label>Optional SFTP known_hosts line<textarea id="known_hosts" autocomplete="off" spellcheck="false" placeholder="hostname ssh-ed25519 AAAA... (optional; verifies the server if provided)"></textarea></label>
+  </section>
+
+  <section class="card">
+    <h2>Reset and schedule</h2>
+    <div class="check"><input id="schedule_enabled" type="checkbox"><label for="schedule_enabled">Enable scheduled dedicated runs</label></div>
+    <p class="hint">For each kind of data, choose what a reset does. "Keep protected zones" keeps whatever overlaps your protected zones and safehouses (8×8-tile map chunks; 256×256-tile population cells). "Reset everything" ignores the zones for that kind of data. "Don't touch" leaves it as it is.</p>
+    <div class="grid">
+      <label>Map chunks (buildings, loot, player changes)<select id="mode_map_chunks"><option value="protect">Reset, keep protected zones</option><option value="reset_all">Reset everything (ignore zones)</option><option value="skip">Don't touch</option></select></label>
+      <label>Zombie population (zpop)<select id="mode_zombie_population"><option value="protect">Reset, keep protected zones</option><option value="reset_all">Reset everything (ignore zones)</option><option value="skip">Don't touch</option></select></label>
+      <label>Animal population (apop) — already-spawned animals may persist<select id="mode_animal_population"><option value="protect">Reset, keep protected zones</option><option value="reset_all">Reset everything (ignore zones)</option><option value="skip">Don't touch</option></select></label>
+    </div>
+    <p class="hint">zpop_ids.bin and zpop_virtual.bin are always kept because they cannot be split by location.</p>
+    <div class="grid">
+      <label>Scheduled runs do<select id="scheduled_action"><option value="dry-run">Dry run only (no changes)</option><option value="apply">Apply the reset</option></select></label>
+      <label>Frequency<select id="frequency"><option>daily</option><option>weekly</option><option>monthly</option></select></label>
+      <label>Start date<input id="anchor_date" type="date"></label>
+      <label>Reset time<input id="time" type="time" value="03:00"></label>
+      <label>Timezone<select id="timezone">
+        <option>America/Toronto</option><option>America/Halifax</option><option>America/Winnipeg</option><option>America/Edmonton</option><option>America/Vancouver</option><option>America/St_Johns</option><option>Europe/London</option><option>Europe/Dublin</option><option>Europe/Paris</option><option>Europe/Berlin</option><option>Europe/Amsterdam</option><option>Europe/Madrid</option><option>Europe/Rome</option><option>Europe/Stockholm</option><option>Europe/Helsinki</option><option>UTC</option>
+      </select></label>
+      <label>Pine Hosting stop time<input id="pine_stop_time" type="time" value="02:00"></label>
+      <label>Pine Hosting start time<input id="pine_start_time" type="time" value="06:00"></label>
+      <label>Start buffer (minutes)<input id="minimum_start_buffer_minutes" type="number" min="0" max="1440" value="30"></label>
+      <label>Allowed lateness (minutes)<input id="allowed_lateness_minutes" type="number" min="0" max="1440" value="10"></label>
+    </div>
+    <p class="warning">The worker does not check whether the server is running. Scheduled apply relies on your Pine Hosting power schedule stopping the server before the reset time and starting it after the window. Keep scheduled runs on dry run until a manual apply and rollback have been tested.</p>
+  </section>
+
+  <section class="card">
+    <div class="actions">
+      <button class="secondary" id="save">Save on this PC</button>
+      <button id="sync">Sync settings and credentials to GitHub</button>
+      <button class="secondary" id="dispatch">Run dry-run now</button>
+    </div>
+    <p id="status" role="status">Ready.</p>
+  </section>
+
+  <section class="card">
+    <h2>Reset now / roll back</h2>
+    <p class="warning">Stop the server in the Pine Hosting panel first and wait until it shows offline. Apply resets every unprotected map chunk; the original map is kept in a single <code>softreset.rollback-…</code> folder in the save (older ones are deleted). Rollback swaps that folder back in, and the replaced state becomes the new rollback folder, so a rollback can itself be undone.</p>
+    <div class="grid">
+      <label>Type the server name to confirm<input id="confirm_server_name" autocomplete="off" placeholder="exact Server name from above"></label>
+    </div>
+    <div class="actions" style="margin-top:12px">
+      <button id="apply">Apply reset now</button>
+      <button class="secondary" id="rollback">Roll back latest reset</button>
+    </div>
+  </section>
+
+<script>
+let sessionToken = "";
+const byId = id => document.getElementById(id);
+const value = id => byId(id).value.trim();
+function settingsFromForm() {
+  return {
+    github: { owner: value("owner"), repo: value("repo"), branch: value("branch") || "main" },
+    server: {
+      name: value("name"), sftp_host: value("sftp_host"), sftp_port: Number(value("sftp_port")),
+      sftp_username: value("sftp_username"), save_dir: value("save_dir"), zone_export: value("zone_export")
+    },
+    world: { build: value("build"), chunk_size: 8 },
+    scheduled_action: value("scheduled_action"),
+    target_modes: { map_chunks: value("mode_map_chunks"), zombie_population: value("mode_zombie_population"), animal_population: value("mode_animal_population") },
+    schedule: {
+      enabled: byId("schedule_enabled").checked, frequency: value("frequency"), anchor_date: value("anchor_date"),
+      time: value("time"), timezone: value("timezone"), pine_stop_time: value("pine_stop_time"),
+      pine_start_time: value("pine_start_time"), minimum_start_buffer_minutes: Number(value("minimum_start_buffer_minutes")),
+      allowed_lateness_minutes: Number(value("allowed_lateness_minutes"))
+    },
+    credentials: {
+      password: value("sftp_password"), private_key: value("private_key"), key_passphrase: value("key_passphrase"), known_hosts: value("known_hosts")
+    }
+  };
+}
+async function post(path, payload) {
+  const response = await fetch(path, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload) });
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  return body;
+}
+function showStatus(text) { byId("status").textContent = text; }
+async function saveLocal() {
+  const data = settingsFromForm();
+  const result = await post("/api/save", data);
+  showStatus(result.message);
+}
+byId("save").onclick = async () => { try { await saveLocal(); } catch (e) { showStatus(e.message); } };
+byId("sync").onclick = async () => {
+  try {
+    const token = value("token");
+    if (!token) throw new Error("Enter a fine-grained GitHub token for this sync.");
+    sessionToken = token;
+    const result = await post("/api/sync", {...settingsFromForm(), token});
+    byId("sftp_password").value = ""; byId("private_key").value = ""; byId("key_passphrase").value = ""; byId("known_hosts").value = "";
+    showStatus(result.message);
+  } catch (e) { showStatus(e.message); }
+};
+async function dispatch(action) {
+  try {
+    const token = sessionToken || value("token");
+    if (!token) throw new Error("Enter a fine-grained GitHub token to start the workflow.");
+    const confirm_server_name = action === "dry-run" ? "" : value("confirm_server_name");
+    if (action !== "dry-run" && confirm_server_name !== value("name")) {
+      throw new Error("Type the server name exactly to confirm " + action + ".");
+    }
+    showStatus("Starting " + action + "…");
+    const result = await post("/api/dispatch", {...settingsFromForm(), token, action, confirm_server_name});
+    if (action !== "dry-run") byId("confirm_server_name").value = "";
+    showStatus(result.message);
+  } catch (e) { showStatus(e.message); }
+}
+byId("dispatch").onclick = () => dispatch("dry-run");
+byId("apply").onclick = () => dispatch("apply");
+byId("rollback").onclick = () => dispatch("rollback");
+async function loadConfig() {
+  const r = await fetch("/api/config"); if (!r.ok) return;
+  const data = await r.json();
+  const p = data.github || {};
+  byId("owner").value = p.owner || ""; byId("repo").value = p.repo || ""; byId("branch").value = p.branch || "main";
+  const c = data.config || {};
+  const s = c.server || {};
+  byId("sftp_host").value = s.sftp_host || ""; byId("sftp_port").value = s.sftp_port || 22;
+  byId("sftp_username").value = s.sftp_username || ""; byId("name").value = s.name || "pinhosting-pz";
+  byId("save_dir").value = s.save_dir || ""; byId("zone_export").value = s.zone_export || "";
+  byId("build").value = (c.world || {}).build || "";
+  const d = c.dedicated_settings || {}; const targets = d.reset_targets || {};
+  const modes = d.target_modes || {};
+  for (const key of ["map_chunks", "zombie_population", "animal_population"]) {
+    // Older configs only have on/off targets: on = keep protected zones, off = don't touch.
+    byId("mode_" + key).value = modes[key] || (targets[key] === true || (key === "map_chunks" && targets[key] !== false) ? "protect" : "skip");
+  }
+  const q = d.schedule || c.schedule || {};
+  byId("schedule_enabled").checked = q.enabled === true;
+  byId("scheduled_action").value = d.scheduled_action === "apply" ? "apply" : "dry-run";
+  for (const id of ["frequency","anchor_date","time","timezone","pine_stop_time","pine_start_time","minimum_start_buffer_minutes","allowed_lateness_minutes"]) if (q[id] !== undefined) byId(id).value = q[id];
+}
+loadConfig().catch(e => showStatus(e.message));
+</script>
+</body>
+</html>

@@ -1,0 +1,179 @@
+# FMG Soft Reset Tool
+
+Backend for the **FMG Soft Reset Tool** Project Zomboid Build 42 mod. It resets
+your multiplayer world (map chunks, zombie population, animal population) while
+keeping safehouses and the areas you protect in game.
+
+The Steam Workshop mod gives admins the in-game tools: protected zones and reset
+settings. This repository does the actual reset while the server is stopped.
+
+## Features
+
+- **Protected zones.** Multiplayer safehouses are protected automatically. Admins
+  draw, name, rename and remove extra protected areas on the in-game world map.
+- **Three choices per data type.** Map chunks, zombie population (`zpop`) and
+  animal population (`apop`) each get one of:
+  - **Reset, keep protected zones**: reset everything that doesn't overlap a
+    protected zone or safehouse.
+  - **Reset everything**: ignore the zones for that data type.
+  - **Don't touch**: leave it as it is.
+- **Dry run first.** Every plan shows how many chunks and cells would be kept and
+  reset before anything changes.
+- **Reset now or on a schedule** (daily, weekly or monthly, in your timezone).
+- **One-step rollback.** The original folders are kept in a
+  `softreset.rollback-<time>` folder inside the save. Rolling back swaps them
+  back, and a rollback can itself be undone. Only the newest rollback folder is
+  kept.
+- **Safe swaps.** Protected files are copied and checked before the live folders
+  are swapped. If a swap fails, the originals are put back.
+
+## Supported setups
+
+| Server | How the reset runs | Status |
+|---|---|---|
+| Windows, locally hosted (Host from the main menu) | Desktop dashboard on the same PC | Tested |
+| Linux dedicated server with SFTP access | GitHub Actions in your own private copy of this repository, set up from a dashboard on your Windows PC | Tested on Pine Hosting |
+
+Other hosts may work if they give SFTP access to the save folder, but they are
+not tested. Windows dedicated servers are not supported.
+
+## What you need
+
+- The **FMG Soft Reset Tool** mod from the Steam Workshop (mod ID
+  `FMGResetTool`), enabled on the server.
+- A Windows PC with [Python 3.12 or newer](https://www.python.org/downloads/)
+  (tick "Add python.exe to PATH" while installing it).
+- For dedicated servers: a free GitHub account and your host's SFTP details.
+
+## Step 1: Make your own copy of this repository
+
+1. Sign in to GitHub and click **Use this template** → **Create a new
+   repository** at the top of this page.
+2. Give it a name and choose **Private**. Keep it private: the dashboard stores
+   your server's SFTP host, username and save paths in it, and the run logs
+   show your file layout.
+3. On your new repository, click **Code** → **Download ZIP** and unzip it on
+   your Windows PC (or clone it with Git).
+4. Open a Command Prompt in that folder and install the requirements once:
+
+   ```
+   py -3 -m pip install -r requirements.txt
+   ```
+
+Locally hosted servers only need the downloaded copy; GitHub isn't used after
+this step.
+
+## Step 2: Set up the mod in game
+
+1. Add the mod to your server (Workshop item **FMG Soft Reset Tool**, mod ID
+   `FMGResetTool`) and start it.
+2. Join as an admin, open the world map, right-click it and choose
+   **FMG-SoftReset-Tool**.
+3. **Protected Zones** tab: type a name, click **Add zone on map...** and drag
+   across the map. Safehouses are added automatically.
+4. **Soft Reset Settings** tab: choose **Local hosted** or **Dedicated hosted**,
+   pick a reset mode for map chunks, zombie population and animal population,
+   and click **Save settings**.
+
+The server writes its zones and settings to `Zomboid/Lua/pz-reset-zones.json`.
+The backend reads that file.
+
+## Step 3a: Locally hosted Windows server
+
+1. Copy `config.example.json` to `config.json` and edit it:
+   - `server.save_dir`: your save folder, for example
+     `C:\Users\<you>\Zomboid\Saves\Multiplayer\servertest`
+   - `server.zone_export`: `C:\Users\<you>\Zomboid\Lua\pz-reset-zones.json`
+   - `world.build`: copy the exact `build` value from `pz-reset-zones.json`
+
+   Use double backslashes (`\\`) in JSON paths. `config.json` stays on your PC.
+2. Double-click `run-local-dashboard.bat`.
+3. **Zones and reset plan** → **Refresh export and dry-run plan** shows what
+   would be kept and reset.
+4. To reset: **fully exit the game**, refresh the plan, then click **Force Chunk
+   Refresh** and confirm. A backup archive (in `backups/`) and a rollback folder
+   are made first.
+5. **Roll Back Latest Reset** restores the latest rollback folder.
+
+The reset modes come from the in-game panel. You can also change them in the
+dashboard's **Local settings** tab; whichever was saved last is used.
+**Start Scheduler** runs scheduled dry-run plans; resets on a local server are
+always started by hand.
+
+## Step 3b: Linux dedicated server (SFTP)
+
+The reset runs on GitHub's servers, in your private copy of this repository, and
+connects to your game server over SFTP. Your PC only needs to be on while you
+change settings.
+
+### Create a GitHub token
+
+On GitHub go to **Settings** → **Developer settings** → **Fine-grained tokens**
+→ **Generate new token**:
+
+- **Repository access**: only your private copy.
+- **Repository permissions**, Read and write: **Contents**, **Workflows**,
+  **Actions**, **Secrets**.
+
+The dashboard only uses the token while the page is open; it is never saved.
+
+### Configure and sync
+
+1. Double-click `run-dedicated-dashboard.bat`. It opens at
+   `http://127.0.0.1:8765`.
+2. **GitHub destination**: **Repository owner** is your GitHub user name.
+   **Private repository** is the name of your copy. **Branch** is `main`. Paste
+   the **Fine-grained token**.
+3. **SFTP and save paths**:
+   - **SFTP host**, **SFTP port** and **SFTP username** come from your host's
+     control panel.
+   - **Server name**: any name you choose. You type it again to confirm each
+     apply or rollback.
+   - **Remote save directory**: for example
+     `/.cache/Saves/Multiplayer/<ServerName>` on Pine Hosting.
+   - **Remote zone export path**: for example `/.cache/Lua/pz-reset-zones.json`.
+   - **Build identifier**: the exact `build` value from that export file.
+4. **SFTP credentials**: enter the SFTP password, or a private key if your host
+   uses SSH keys. The dashboard sends them straight to your repository's
+   encrypted **Actions secrets**. They are never saved on your PC or committed
+   to the repository.
+5. **Reset and schedule**: choose a reset mode per data type, the schedule and
+   your host's stop and start times. Then click **Sync settings and credentials
+   to GitHub**.
+
+### Run it
+
+1. **Dry run:** click **Run dry-run now** and open your repository's **Actions**
+   tab to see the plan and summary. Nothing is changed.
+2. **Apply:** stop the server in your host's panel and wait until it is offline.
+   Then type the server name in **Reset now / roll back** and click **Apply reset
+   now**. On a ~250,000-chunk map this took about 12 minutes.
+3. **Roll back:** with the server stopped, click **Roll back latest reset**.
+4. **Scheduled apply (optional):** set **Scheduled runs do** to **Apply the
+   reset** and sync again. Use your host's power schedule to stop the server
+   before the reset time. Scheduled runs only act inside your stop/start window.
+   Keep scheduled runs on dry run until you have tested a manual apply and
+   rollback.
+
+You can also start runs from the **Actions** tab: choose **FMG Dedicated Soft
+Reset** → **Run workflow**, pick the action and type the server name.
+
+The tool does **not** check whether the server is running, so always stop it
+first. No backup is kept on GitHub, so keep your host's own backups turned on.
+
+## Good to know
+
+- Population files cover 256×256-tile cells. A cell touched by any protected
+  zone is kept whole. `zpop_ids.bin` and `zpop_virtual.bin` are always kept.
+  Animals that have already spawned may persist.
+- "Reset everything" on map chunks leaves an empty `map` folder, and the game
+  regenerates the world as players explore.
+- Non-PvP zones are not treated as protected.
+- Build 42 only.
+- Private repositories on a free GitHub plan include 2,000 Actions minutes a
+  month, which is plenty for weekly resets.
+
+## Updating
+
+When this template is updated, copy the changed files into your own repository
+(or create a fresh copy and sync your settings from the dashboard again).
