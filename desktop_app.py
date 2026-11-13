@@ -9,10 +9,11 @@ import threading
 import tkinter as tk
 from datetime import datetime, timezone
 from pathlib import Path
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
 
 import hard_reset
+import local_saves
 
 from config import (
     CONFIG_PATH,
@@ -187,7 +188,8 @@ class LocalDashboard:
 
     def _build_overview(self) -> None:
         self.export_var = tk.StringVar()
-        ttk.Label(self.overview_tab, textvariable=self.export_var).pack(anchor="w", pady=(0, 8))
+        ttk.Label(self.overview_tab, textvariable=self.export_var, wraplength=1000, justify="left").pack(
+            anchor="w", pady=(0, 8))
 
         zone_frame = ttk.LabelFrame(self.overview_tab, text="Protected zones", padding=6)
         zone_frame.pack(fill="both", expand=True)
@@ -237,6 +239,26 @@ class LocalDashboard:
         ttk.Button(plan_actions, text="Refresh export and dry-run plan", command=self.refresh_plan).pack(side="right", padx=(0, 8))
 
     def _build_settings(self) -> None:
+        save_frame = ttk.LabelFrame(self.settings_tab, text="Hosted save this dashboard works on", padding=8)
+        save_frame.pack(fill="x", pady=(0, 10))
+        self.save_var = tk.StringVar()
+        self.save_combo = ttk.Combobox(save_frame, textvariable=self.save_var, state="readonly", width=48)
+        self.save_combo.grid(row=0, column=0, sticky="w")
+        self.save_combo.bind("<<ComboboxSelected>>", self._on_save_selected)
+        ttk.Button(save_frame, text="Browse...", command=self.browse_save).grid(row=0, column=1, padx=8)
+        self.save_path_var = tk.StringVar()
+        ttk.Label(save_frame, textvariable=self.save_path_var, wraplength=940, foreground="#555555").grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(
+            save_frame,
+            wraplength=940,
+            foreground="#555555",
+            text="Lists every save made by hosting a server (folders under Zomboid\\Saves\\Multiplayer with a "
+                 "map_meta.bin). Dry runs, resets, rollbacks and hard resets all use the save chosen here. "
+                 "All hosted servers share one zone export, so after switching, host the chosen save once "
+                 "so its protected zones and safehouses are exported.",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
         note = ttk.Label(
             self.settings_tab,
             text="Values load from the in-game export. Saving here creates a Local worker override; zone geometry remains owned by the game mod. Use the 'Use in-game settings' button to remove that override.",
@@ -609,9 +631,70 @@ class LocalDashboard:
             if self.config.get("desktop_settings", {}).get("enabled") is True:
                 text += "; newer than this dashboard's saved settings"
         self.source_var.set(text + ". Whichever was saved last is used.")
+        self._refresh_save_choices()
+
+    # ----- Choosing the hosted save -----------------------------------------------------------
+
+    def _refresh_save_choices(self) -> None:
+        current = Path(self.config["server"]["save_dir"])
+        self._save_paths: dict[str, Path] = {}
+        for save in local_saves.hosted_saves(self.config):
+            label = save["name"] if save["has_server_ini"] else f"{save['name']}  (copy, no server settings)"
+            self._save_paths[label] = save["path"]
+        current_label = next((label for label, path in self._save_paths.items() if path == current), None)
+        if current_label is None:
+            current_label = f"{current.name}  (other location)"
+            self._save_paths[current_label] = current
+        self.save_combo.configure(values=tuple(self._save_paths))
+        self.save_var.set(current_label)
+        self.save_path_var.set(f"Folder: {current}")
+
+    def _on_save_selected(self, _event: Any = None) -> None:
+        path = self._save_paths.get(self.save_var.get())
+        if path is not None and path != Path(self.config["server"]["save_dir"]):
+            self.switch_save(path)
+
+    def browse_save(self) -> None:
+        chosen = filedialog.askdirectory(
+            parent=self.root,
+            title="Choose the hosted server's save folder",
+            initialdir=str(local_saves.multiplayer_dir(self.config)),
+            mustexist=True,
+        )
+        if chosen:
+            self.switch_save(Path(chosen))
+
+    def switch_save(self, path: Path) -> None:
+        try:
+            if self.force_running:
+                raise ConfigError("Wait for the running reset to finish before switching saves")
+            if not self._scheduler_lock_is_available():
+                raise ConfigError("Stop the local scheduler before switching saves")
+            config = load_config()
+            folder = local_saves.select_save(config, path)
+            validate_config(config)
+            temporary = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+            temporary.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+            os.replace(temporary, CONFIG_PATH)
+            self.config = config
+        except (OSError, ConfigError, hard_reset.WorkerError) as exc:
+            messagebox.showerror("Could not switch save", str(exc), parent=self.root)
+            self._refresh_save_choices()
+            return
+        self._refresh_save_choices()
+        self.status_var.set(f"Now working on save '{folder.name}' ({folder}).")
+        self._refresh_rollback_button()
+        self.refresh_plan()
+        if self.tabs.select() == str(self.hard_tab):
+            self.refresh_hard_reset()
 
     def _populate_zones(self, export: dict[str, Any]) -> None:
-        self.export_var.set(f"Zone export: {export['generatedAt']} | Build {export['build']} | Local hosted")
+        save_dir = self.config["server"]["save_dir"]
+        exported_from = export.get("saveName") or "unknown save (mod older than 0.4.3)"
+        text = (f"Save: {Path(save_dir).name} | Zone export from {exported_from}, {export['generatedAt']} "
+                f"| Build {export['build']} | Local hosted")
+        mismatch = local_saves.export_save_mismatch(export, save_dir)
+        self.export_var.set(f"WARNING: {mismatch}\n{text}" if mismatch else text)
         for item in self.zone_tree.get_children():
             self.zone_tree.delete(item)
         protected_chunks: set[tuple[int, int]] = set()

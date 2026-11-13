@@ -133,9 +133,13 @@ local function buildExport()
     if not core then error("game core is unavailable") end
     local build = callFirst(core, { "getVersion" }, "core")
     local settings = data.settings
+    -- Every hosted server writes this same file; saveName lets the backend refuse an export
+    -- that came from a different save than the one it is about to reset.
+    local saveName = getServerName and getServerName() or ""
     return string.format(
-        '{"schemaVersion":2,"build":%s,"executionMode":%s,"generatedAt":%s,"settingsSavedAt":%s,"zones":[%s],"resetModes":%s,"resetTargets":%s,"schedule":%s,"safety":%s}',
+        '{"schemaVersion":2,"build":%s,"saveName":%s,"executionMode":%s,"generatedAt":%s,"settingsSavedAt":%s,"zones":[%s],"resetModes":%s,"resetTargets":%s,"schedule":%s,"safety":%s}',
         jsonString(build),
+        jsonString(saveName),
         jsonString(data.settings.executionMode or "local"),
         jsonString(os.date("!%Y-%m-%dT%H:%M:%SZ")),
         jsonString(data.settings.savedAt or ""),

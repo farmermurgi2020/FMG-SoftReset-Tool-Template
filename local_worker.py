@@ -18,6 +18,7 @@ from typing import Any
 from config import ROOT, ConfigError, load_config, merge_exported_worker_settings, target_modes
 from geometry import GeometryError, Rect, protected_chunks
 from history import append_run_record
+from local_saves import export_save_mismatch
 from worker import (
     Chunk,
     LAYOUT_APPROVAL,
@@ -68,6 +69,13 @@ def _read_zone_export(path: Path, config: dict[str, Any]) -> tuple[dict[str, Any
         )
     if export.get("schemaVersion") == 2 and export.get("executionMode", "local") != "local":
         raise WorkerError("zone export is not configured for Local hosted mode")
+    # Every hosted server writes the same export file; never use one save's zones for another.
+    mismatch = export_save_mismatch(export, config["server"]["save_dir"])
+    if mismatch:
+        raise WorkerError(mismatch)
+    if not export.get("saveName"):
+        LOG.warning("The zone export does not say which save wrote it (mod older than 0.4.3). "
+                    "Make sure '%s' was the last server you hosted.", Path(config["server"]["save_dir"]).name)
     try:
         merge_exported_worker_settings(config, export)
     except ConfigError as exc:

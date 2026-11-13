@@ -93,12 +93,18 @@ The backend reads that file.
 
    Use double backslashes (`\\`) in JSON paths. `config.json` stays on your PC.
 2. Double-click `run-local-dashboard.bat`.
-3. **Zones and reset plan** → **Refresh export and dry-run plan** shows what
+3. **Hosting more than one server?** In **Local settings → Hosted save**, pick the
+   save to work on (or **Browse...** to a save folder elsewhere). Every dry run,
+   reset, rollback and hard reset uses that save. All hosted servers share one
+   zone export file, so after switching, host the chosen save once so its
+   protected zones and safehouses are exported. The tool refuses to use an
+   export written by a different save.
+4. **Zones and reset plan** → **Refresh export and dry-run plan** shows what
    would be kept and reset.
-4. To reset: **fully exit the game**, refresh the plan, then click **Force Chunk
+5. To reset: **fully exit the game**, refresh the plan, then click **Force Chunk
    Refresh** and confirm. A backup archive (in `backups/`) and a rollback folder
    are made first.
-5. **Roll Back Latest Reset** restores the latest rollback folder.
+6. **Roll Back Latest Reset** restores the latest rollback folder.
 
 The reset modes come from the in-game panel. You can also change them in the
 dashboard's **Local settings** tab; whichever was saved last is used.
@@ -235,7 +241,7 @@ once safehouses are gone they no longer protect anything.
   workflow knows the new actions.
 - Then start the server. The console shows `[FMGResetTool] Hard reset finished:
   removed N safehouses and M factions.`, and 10 in-game minutes later a check
-  confirms none came back. Your server must run mod version 0.4.2 or newer.
+  confirms none came back. Your server must run mod version 0.4.2 or newer (0.4.3 for the hosted-save check).
 
 **Undo:** the removed files are kept in a `hardreset.rollback-<time>` folder in
 the save, together with copies of `map_meta.bin` and `global_mod_data.bin`.
