@@ -276,7 +276,8 @@ undo copy of the first.
 
 | Mod | What the tool does | Status |
 |---|---|---|
-| Knox Claim (Workshop 3776531408) | Hard reset empties its land and vehicle claim lists, so it can't rebuild the removed safehouses. Undo brings them back. | Tested on a dedicated server |
+| Knox Claim (Workshop 3776531408): safehouses and land claims | Hard reset empties its land and vehicle claim lists, so it can't rebuild the removed safehouses. Undo brings them back. | Tested on a dedicated server |
+| Knox Claim (Workshop 3776531408): claimed vehicles | A map chunk reset of the area where a claimed vehicle is parked has not been checked yet. Park claimed vehicles inside a protected zone until it is. | Not tested yet |
 | Project A-Life NPCs (Workshop 3803984183) | Its NPCs are zombies with a registry in global mod data that respawns them; the soft reset never touches global mod data, so a zpop reset should not lose NPCs. | Not tested yet |
 
 ## Updating
