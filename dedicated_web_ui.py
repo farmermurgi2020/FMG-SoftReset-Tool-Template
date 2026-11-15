@@ -32,6 +32,7 @@ DISPATCH_LABELS = {
     "rollback": "Rollback",
     "hard-reset": "Hard reset (player data)",
     "hard-reset-undo": "Undo hard reset",
+    "cleanup": "Clean up old rollbacks",
 }
 
 
@@ -220,7 +221,7 @@ on:
 {schedule_block}  workflow_dispatch:
     inputs:
       action:
-        description: What to run. Stop the server in the Pine Hosting panel before apply, rollback or hard reset. "scheduled" is used by cron-job.org and only runs inside the reset window. "hard-reset" removes all characters and restarts at day 1.
+        description: What to run. Stop the server in the Pine Hosting panel before apply, rollback or hard reset. "scheduled" is used by cron-job.org and only runs inside the reset window. "hard-reset" removes all characters and restarts at day 1. "cleanup" deletes old rollback folders and can run while the server is up.
         required: true
         type: choice
         options:
@@ -451,7 +452,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if action not in DISPATCH_LABELS:
                     raise ConfigError("unknown workflow action")
                 confirm = str(payload.get("confirm_server_name", "")).strip()
-                if action != "dry-run" and confirm != config["server"]["name"]:
+                if action not in ("dry-run", "cleanup") and confirm != config["server"]["name"]:
                     raise ConfigError("type the server name exactly to confirm apply, rollback or hard reset")
                 _sync_to_github(config, preferences, token, payload.get("credentials") or {})
                 owner, repo, branch = preferences["owner"], preferences["repo"], preferences["branch"]

@@ -167,6 +167,10 @@ The dashboard only uses the token while the page is open; it is never saved.
    before the reset time. Scheduled runs only act inside your stop/start window.
    Keep scheduled runs on dry run until you have tested a manual apply and
    rollback.
+5. **Clean up old rollbacks:** click **Clean up old rollbacks** to delete every
+   `softreset.rollback-…` folder except the newest, plus leftover staging
+   folders. The game never reads them, so the server can stay online, and no
+   server name is needed. Each folder gets up to 3 delete attempts.
 
 You can also start runs from the **Actions** tab: choose **FMG Dedicated Soft
 Reset** → **Run workflow**, pick the action and type the server name.
@@ -265,6 +269,15 @@ undo copy of the first.
   rollback folder is deleted. Over SFTP that takes time: about 45 minutes for
   ~250,000 files on Pine Hosting. It runs after the new map is in place and
   only touches the old rollback folder, so the server can start meanwhile.
+  Each delete is tried up to 3 times; anything still left is removed later
+  with **Clean up old rollbacks**.
+
+## Mod compatibility
+
+| Mod | What the tool does | Status |
+|---|---|---|
+| Knox Claim (Workshop 3776531408) | Hard reset empties its land and vehicle claim lists, so it can't rebuild the removed safehouses. Undo brings them back. | Tested on a dedicated server |
+| Project A-Life NPCs (Workshop 3803984183) | Its NPCs are zombies with a registry in global mod data that respawns them; the soft reset never touches global mod data, so a zpop reset should not lose NPCs. | Not tested yet |
 
 ## Updating
 

@@ -717,9 +717,45 @@ def _remove_stale_staging(config: dict[str, Any], sftp: paramiko.SFTPClient, sav
             _discard_stage(config, sftp, _remote_join(save_dir, entry.filename))
 
 
-def _prune_older_rollback_sets(
-    config: dict[str, Any], sftp: paramiko.SFTPClient, save_dir: str, keep_name: str
-) -> None:
+DELETE_ATTEMPTS = 3
+RETRY_DELAY_SECONDS = 30
+
+
+def _delete_with_retries(config: dict[str, Any], sftp: paramiko.SFTPClient, path: str, what: str) -> bool:
+    """Delete a folder the game never reads (old rollback set, leftover staging), retrying only the delete.
+
+    A dropped SFTP connection shows up as a timeout part-way through; later attempts use a
+    fresh login and continue with whatever is left. Returns False if every attempt failed.
+    """
+    for attempt in range(1, DELETE_ATTEMPTS + 1):
+        client = None
+        try:
+            if attempt == 1:
+                channel = sftp
+            else:
+                client, channel = _connect(config)
+            if not _exists(channel, path):
+                LOG.info("%s %s is already gone", what, path)
+                return True
+            removed = _remote_rmtree(config, channel, path)
+            LOG.info("Removed %s %s (%d files, attempt %d of %d)", what, path, removed, attempt, DELETE_ATTEMPTS)
+            return True
+        except (OSError, WorkerError, paramiko.SSHException) as exc:
+            if attempt == DELETE_ATTEMPTS:
+                LOG.error("Could not remove %s %s after %d attempts: %s: %s",
+                          what, path, DELETE_ATTEMPTS, type(exc).__name__, exc)
+                return False
+            LOG.warning("Removing %s %s failed (attempt %d of %d: %s); retrying in %ds",
+                        what, path, attempt, DELETE_ATTEMPTS, type(exc).__name__, RETRY_DELAY_SECONDS)
+            time_module.sleep(RETRY_DELAY_SECONDS)
+        finally:
+            if client is not None:
+                client.close()
+    return False
+
+
+def _older_rollback_sets(sftp: paramiko.SFTPClient, save_dir: str, keep_name: str | None) -> list[str]:
+    names = []
     for entry in _listdir(sftp, save_dir):
         name = entry.filename
         if name == keep_name or not name.startswith(PRUNABLE_PREFIXES):
@@ -727,13 +763,63 @@ def _prune_older_rollback_sets(
         if not stat.S_ISDIR(entry.st_mode):
             LOG.warning("Skipping unexpected old rollback entry: %s", name)
             continue
+        names.append(name)
+    return sorted(names)
+
+
+def _prune_older_rollback_sets(
+    config: dict[str, Any], sftp: paramiko.SFTPClient, save_dir: str, keep_name: str
+) -> None:
+    for name in _older_rollback_sets(sftp, save_dir, keep_name):
         path = _remote_join(save_dir, name)
         LOG.info("Removing superseded rollback set %s", path)
-        try:
-            removed = _remote_rmtree(config, sftp, path)
-            LOG.info("Removed superseded rollback set %s (%d files)", path, removed)
-        except (OSError, WorkerError):
-            LOG.exception("Could not remove superseded rollback set: %s", path)
+        _delete_with_retries(config, sftp, path, "superseded rollback set")
+
+
+def run_cleanup(config: dict[str, Any]) -> dict[str, Any]:
+    """Delete old rollback sets and leftover staging folders; keeps the newest rollback set.
+
+    The game never reads these folders, so this is safe while the server is running.
+    """
+    save_dir = config["server"]["save_dir"]
+    client, sftp = _connect(config)
+    try:
+        entries = _listdir(sftp, save_dir)
+        current = sorted(e.filename for e in entries
+                         if ROLLBACK_NAME.fullmatch(e.filename) and stat.S_ISDIR(e.st_mode))
+        if current:
+            keep = current[-1]
+        else:  # only older layouts left: keep the newest of those so a rollback stays possible
+            older = _older_rollback_sets(sftp, save_dir, None)
+            keep = older[-1] if older else None
+        targets = [(name, "old rollback set") for name in _older_rollback_sets(sftp, save_dir, keep)]
+        targets += [(e.filename, "leftover staging folder") for e in entries
+                    if STAGING_NAME.fullmatch(e.filename) and stat.S_ISDIR(e.st_mode)]
+        LOG.info("Keeping newest rollback set: %s", keep or "none found")
+        if not targets:
+            LOG.info("Nothing to clean up in %s", save_dir)
+        removed, failed = [], []
+        for name, what in targets:
+            path = _remote_join(save_dir, name)
+            LOG.info("Removing %s %s", what, path)
+            (removed if _delete_with_retries(config, sftp, path, what) else failed).append(name)
+        plan = {
+            "server": config["server"]["name"],
+            "build": config["world"]["build"],
+            "cleanup": True,
+            "kept_rollback_set": keep,
+            "removed": removed,
+            "failed": failed,
+            "cleaned_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _save_plan(plan)
+        if failed:
+            raise WorkerError(f"could not remove {len(failed)} folder(s): {', '.join(failed)}; run the cleanup again later")
+        LOG.warning("Cleanup finished: %d folder(s) removed, kept %s", len(removed), keep or "no rollback set")
+        return plan
+    finally:
+        sftp.close()
+        client.close()
 
 
 def run_apply(config: dict[str, Any], *, scheduled: bool = False) -> dict[str, Any]:
@@ -934,6 +1020,11 @@ def main() -> int:
         metavar="ROLLBACK_SET",
         help="restore the latest (or a named) softreset.rollback-* set",
     )
+    action.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="dedicated: delete old rollback sets and leftover staging folders (safe while the server runs)",
+    )
     parser.add_argument("--scheduled", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--confirm-server-name",
@@ -956,6 +1047,8 @@ def main() -> int:
     try:
         config = load_config()
         if config["server"].get("connection_mode", "sftp") == "local":
+            if args.cleanup:
+                raise WorkerError("--cleanup is for the dedicated (SFTP) setup")
             from local_worker import main as run_local
 
             local_args = []
@@ -988,7 +1081,11 @@ def main() -> int:
         if args.apply and args.scheduled:
             if config.get("dedicated_settings", {}).get("scheduled_action") != "apply":
                 raise WorkerError("scheduled apply is not enabled (dedicated_settings.scheduled_action)")
-        if args.rollback:
+        if args.cleanup:
+            if args.scheduled:
+                raise WorkerError("cleanup is not a scheduled action")
+            run_cleanup(config)
+        elif args.rollback:
             run_rollback(config, None if args.rollback == "latest" else args.rollback)
         else:
             config = load_remote_worker_settings(config)

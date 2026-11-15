@@ -13,7 +13,7 @@ from schedule import github_cron_for, occurrence_on_or_after, validate_timezone
 
 
 # Also the options of the workflow's "Run workflow" dropdown (dedicated_web_ui._workflow_text).
-MODES = ("dry-run", "apply", "rollback", "benchmark", "scheduled", "hard-reset", "hard-reset-undo")
+MODES = ("dry-run", "apply", "rollback", "benchmark", "scheduled", "hard-reset", "hard-reset-undo", "cleanup")
 HARD_RESET_MODES = {"hard-reset": "--apply", "hard-reset-undo": "--undo"}
 
 
@@ -86,9 +86,27 @@ def _hard_reset_summary(action: str, plan: dict, succeeded: bool) -> list[str]:
     return lines
 
 
+def _cleanup_summary(plan: dict, succeeded: bool) -> list[str]:
+    title = "old rollbacks cleaned up" if succeeded else "cleanup INCOMPLETE"
+    lines = [f"## FMG Dedicated Soft Reset — {title}", "", f"- Server: `{plan.get('server', 'unknown')}`",
+             f"- Kept (newest rollback set): `{plan.get('kept_rollback_set') or 'none found'}`"]
+    removed, failed = plan.get("removed", []), plan.get("failed", [])
+    lines.append(f"- Removed: {', '.join(f'`{name}`' for name in removed) if removed else 'nothing to remove'}")
+    if failed:
+        lines.append(f"- Still there after 3 attempts: {', '.join(f'`{name}`' for name in failed)}. Run the cleanup again later.")
+    if "cleaned_at" not in plan and not failed:
+        lines += ["", "See the job log for the error."]
+    lines += ["", "Map, zpop, apop and player data were not touched. Safe to run while the server is up."]
+    return lines
+
+
 def _write_summary(path: Path, action: str, plan: dict, succeeded: bool) -> None:
-    lines = (_hard_reset_summary(action, plan, succeeded) if action in HARD_RESET_MODES
-             else _reset_summary(action, plan, succeeded))
+    if action == "cleanup":
+        lines = _cleanup_summary(plan, succeeded)
+    elif action in HARD_RESET_MODES:
+        lines = _hard_reset_summary(action, plan, succeeded)
+    else:
+        lines = _reset_summary(action, plan, succeeded)
     with path.open("a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
 
@@ -170,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             if action == "dry-run":
                 command.append("--dry-run")
+            elif action == "cleanup":
+                command.append("--cleanup")
             else:
                 command += [f"--{action}", "--confirm-server-name", args.confirm_server_name]
         print(f"Running {action} for {config['server']['name']}.", flush=True)

@@ -274,12 +274,104 @@ class RemoteWorkerTests(unittest.TestCase):
         self.assertEqual(removed, 200)
         self.assertFalse(tree.exists())
 
+    def _connect_fresh(self):
+        return patch("worker._connect", side_effect=lambda config: (_Client(self.root), FakeSFTP(self.root)))
+
+    def test_cleanup_keeps_newest_rollback_and_removes_older_sets_and_staging(self):
+        newest = self.save / "softreset.rollback-20250101T000000Z" / "map"
+        newest.mkdir(parents=True)
+        (newest / "keep.bin").write_bytes(b"newest")
+        stale = self.save / ".map.pz-reset-staging-20200101T000000Z"
+        stale.mkdir()
+        (stale / "x.bin").write_bytes(b"partial")
+        hard = self.save / "hardreset.rollback-20200101T000000Z"
+        hard.mkdir()
+        with self._connect_fresh(), patch("worker._save_plan"):
+            plan = worker.run_cleanup(self.config)
+        self.assertEqual(self._rollback_sets(), ["softreset.rollback-20250101T000000Z"])
+        self.assertEqual(plan["kept_rollback_set"], "softreset.rollback-20250101T000000Z")
+        self.assertEqual(sorted(plan["removed"]), [".map.pz-reset-staging-20200101T000000Z",
+                                                   "softreset.rollback-20200101T000000Z"])
+        self.assertFalse(stale.exists())
+        self.assertTrue(hard.exists(), "hard reset folders are not part of the cleanup")
+        self.assertTrue((self.save / "map" / "1" / "0.bin").is_file(), "the live map is not touched")
+
+    def test_cleanup_with_a_single_rollback_set_removes_nothing(self):
+        with self._connect_fresh(), patch("worker._save_plan"):
+            plan = worker.run_cleanup(self.config)
+        self.assertEqual(plan["removed"], [])
+        self.assertEqual(self._rollback_sets(), ["softreset.rollback-20200101T000000Z"])
+
+    def test_delete_retries_only_the_delete_after_a_timeout(self):
+        real = worker._remote_rmtree
+        calls = []
+
+        def flaky(config, sftp, path):
+            calls.append(path)
+            if len(calls) == 1:
+                raise TimeoutError()
+            return real(config, sftp, path)
+
+        with self._connect_fresh(), patch("worker._remote_rmtree", side_effect=flaky), \
+                patch("worker.RETRY_DELAY_SECONDS", 0):
+            ok = worker._delete_with_retries(self.config, FakeSFTP(self.root),
+                                             "/save/softreset.rollback-20200101T000000Z", "old rollback set")
+        self.assertTrue(ok)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self._rollback_sets(), [])
+
+    def test_delete_gives_up_after_three_attempts_and_cleanup_reports_it(self):
+        newest = self.save / "softreset.rollback-20250101T000000Z"
+        newest.mkdir()
+        with self._connect_fresh(), patch("worker._remote_rmtree", side_effect=TimeoutError()) as rmtree, \
+                patch("worker.RETRY_DELAY_SECONDS", 0), patch("worker._save_plan") as save:
+            with self.assertRaises(worker.WorkerError):
+                worker.run_cleanup(self.config)
+        self.assertEqual(rmtree.call_count, worker.DELETE_ATTEMPTS)
+        self.assertEqual(save.call_args[0][0]["failed"], ["softreset.rollback-20200101T000000Z"])
+        self.assertEqual(len(self._rollback_sets()), 2)
+
+    def test_apply_survives_a_rollback_set_that_cannot_be_deleted(self):
+        real = worker._remote_rmtree
+
+        def refuse_old(config, sftp, path):
+            if "20200101" in path:
+                raise TimeoutError()
+            return real(config, sftp, path)
+
+        with patch("worker._remote_rmtree", side_effect=refuse_old), patch("worker.RETRY_DELAY_SECONDS", 0), \
+                self._connect_fresh(), patch("worker._save_plan"):
+            plan = worker.run_apply(self.config)
+        self.assertIn("applied_at", plan)
+        self.assertEqual(len(self._rollback_sets()), 2, "the reset still applies; the old set waits for cleanup")
+
     def test_rollback_without_a_rollback_set_is_refused(self):
         for path in sorted(self.save.glob("softreset.rollback-*/**/*"), reverse=True):
             path.unlink() if path.is_file() else path.rmdir()
         (self.save / "softreset.rollback-20200101T000000Z").rmdir()
         with self.assertRaises(worker.WorkerError):
             self._run(worker.run_rollback, self.config)
+
+
+class CleanupWorkflowTests(unittest.TestCase):
+    def test_cleanup_is_a_workflow_and_dashboard_action_without_server_name(self):
+        import dedicated_workflow
+        from dedicated_web_ui import DISPATCH_LABELS, _workflow_text
+
+        self.assertIn("cleanup", dedicated_workflow.MODES)
+        self.assertIn("          - cleanup\n", _workflow_text({"enabled": False}))
+        self.assertEqual(DISPATCH_LABELS["cleanup"], "Clean up old rollbacks")
+
+    def test_cleanup_summary_names_kept_removed_and_failed_folders(self):
+        import dedicated_workflow
+
+        plan = {"server": "fixture", "kept_rollback_set": "softreset.rollback-B", "removed": ["softreset.rollback-A"],
+                "failed": ["softreset.rollback-0"], "cleaned_at": "now"}
+        text = "\n".join(dedicated_workflow._cleanup_summary(plan, False))
+        self.assertIn("cleanup INCOMPLETE", text)
+        self.assertIn("`softreset.rollback-B`", text)
+        self.assertIn("Removed: `softreset.rollback-A`", text)
+        self.assertIn("Still there after 3 attempts: `softreset.rollback-0`", text)
 
 
 if __name__ == "__main__":
