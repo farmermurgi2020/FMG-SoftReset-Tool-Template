@@ -387,6 +387,67 @@ class RemoteWorkerTests(unittest.TestCase):
                 worker.run_dry_run(self.config)
         self.assertEqual(build.call_count, 1)
 
+    def test_parallel_task_retries_a_stalled_file_on_a_fresh_login(self):
+        done, failures = [], {"b": 1}
+        connects = []
+
+        def connect(config):
+            connects.append(1)
+            return _Client(self.root), FakeSFTP(self.root)
+
+        def task(channel, item):
+            if failures.get(item):
+                failures[item] -= 1
+                raise TimeoutError()
+            done.append(item)
+
+        with patch("worker._connect", side_effect=connect), patch("worker.ITEM_RETRY_DELAY_SECONDS", 0), \
+                patch("worker.SFTP_WORKERS", 1):
+            worker._run_parallel(self.config, ["a", "b", "c"], task, "Copying")
+        self.assertEqual(done, ["a", "b", "c"])
+        self.assertEqual(len(connects), 2, "one extra login for the retry")
+
+    def test_parallel_task_gives_up_after_three_stalls(self):
+        def task(channel, item):
+            raise TimeoutError()
+
+        with self._connect_fresh(), patch("worker.ITEM_RETRY_DELAY_SECONDS", 0), patch("worker.SFTP_WORKERS", 1):
+            with self.assertRaises(TimeoutError):
+                worker._run_parallel(self.config, ["a"], task, "Copying")
+
+    def test_parallel_task_does_not_retry_file_problems(self):
+        calls = []
+
+        def task(channel, item):
+            calls.append(item)
+            raise PermissionError("denied")
+
+        with self._connect_fresh(), patch("worker.ITEM_RETRY_DELAY_SECONDS", 0), patch("worker.SFTP_WORKERS", 1):
+            with self.assertRaises(PermissionError):
+                worker._run_parallel(self.config, ["a"], task, "Copying")
+        self.assertEqual(calls, ["a"])
+
+    def test_apply_survives_a_stalled_chunk_copy(self):
+        original = FakeSFTP.putfo
+        stalled = []
+
+        def putfo(sftp, fileobj, path, *args, **kwargs):
+            if path.endswith("/0/0.bin") and "staging" in path and not stalled:
+                stalled.append(path)
+                raise TimeoutError()
+            return original(sftp, fileobj, path, *args, **kwargs)
+
+        with patch.object(FakeSFTP, "putfo", putfo), patch("worker.ITEM_RETRY_DELAY_SECONDS", 0), \
+                self._connect_fresh(), patch("worker._save_plan"):
+            plan = worker.run_apply(self.config)
+        self.assertEqual(len(stalled), 1)
+        self.assertIn("applied_at", plan)
+        self.assertEqual((self.save / "map" / "0" / "0.bin").read_bytes(), b"protected")
+        self.assertFalse((self.save / "map" / "1").exists())
+
+    def test_deleting_a_file_that_is_already_gone_counts_as_done(self):
+        worker._remove_file(FakeSFTP(self.root), "/save/no-such-file.bin")
+
     def test_rollback_without_a_rollback_set_is_refused(self):
         for path in sorted(self.save.glob("softreset.rollback-*/**/*"), reverse=True):
             path.unlink() if path.is_file() else path.rmdir()

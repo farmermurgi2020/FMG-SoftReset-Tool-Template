@@ -163,6 +163,8 @@ The dashboard only uses the token while the page is open; it is never saved.
    now**. On a ~250,000-chunk map this took about 12 minutes.
    The first step is a read-only scan; if the SFTP server stops answering, the
    worker logs in again and scans again (up to 3 attempts) before changing anything.
+   While copying and deleting, a file whose transfer stalls is retried on a
+   fresh login (up to 3 attempts) while the other connections keep going.
 3. **Roll back:** with the server stopped, click **Roll back latest reset**.
 4. **Scheduled apply (optional):** set **Scheduled runs do** to **Apply the
    reset** and sync again. Use your host's power schedule to stop the server

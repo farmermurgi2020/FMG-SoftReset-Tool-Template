@@ -614,6 +614,34 @@ def _copy_remote_file(channel: paramiko.SFTPClient, source: str, target: str) ->
     return len(data)
 
 
+ITEM_ATTEMPTS = 3
+ITEM_RETRY_DELAY_SECONDS = 10
+# Real file problems: retrying the same request would only fail again.
+_NOT_CONNECTION_ERRORS = (FileNotFoundError, FileExistsError, PermissionError, IsADirectoryError, NotADirectoryError)
+
+
+def _is_connection_error(exc: BaseException) -> bool:
+    """A stalled or dropped SFTP connection (request timeout, closed socket), not a file problem."""
+    if isinstance(exc, (EOFError, paramiko.SSHException)):
+        return True
+    return isinstance(exc, OSError) and not isinstance(exc, _NOT_CONNECTION_ERRORS)
+
+
+def _item_name(item: Any) -> str:
+    path = getattr(item, "path", item)
+    if isinstance(path, tuple):
+        path = path[0]
+    return str(path)
+
+
+def _remove_file(channel: paramiko.SFTPClient, path: str) -> None:
+    """Delete one file; already gone counts as done (a retried delete may have gone through)."""
+    try:
+        channel.remove(path)
+    except FileNotFoundError:
+        pass
+
+
 def _run_parallel(config: dict[str, Any], items: list[Any], task, label: str) -> None:
     """Run task(sftp, item) for every item over several separate SFTP logins.
 
@@ -637,7 +665,22 @@ def _run_parallel(config: dict[str, Any], items: list[Any], task, label: str) ->
             for item in batch:
                 if stop.is_set():
                     return
-                task(channel, item)
+                for attempt in range(1, ITEM_ATTEMPTS + 1):
+                    try:
+                        task(channel, item)
+                        break
+                    except Exception as exc:
+                        if attempt == ITEM_ATTEMPTS or stop.is_set() or not _is_connection_error(exc):
+                            raise
+                        LOG.warning("%s: %s stalled (attempt %d of %d: %s); logging in again and retrying it",
+                                    label, _item_name(item), attempt, ITEM_ATTEMPTS, type(exc).__name__)
+                        for close in (channel.close, worker_client.close):
+                            try:
+                                close()
+                            except Exception:  # the old connection may already be dead
+                                pass
+                        time_module.sleep(ITEM_RETRY_DELAY_SECONDS)
+                        worker_client, channel = _connect(config)
                 with lock:
                     progress[0] += 1
                     done = progress[0]
@@ -676,7 +719,7 @@ def _remote_rmtree(config: dict[str, Any], sftp: paramiko.SFTPClient, path: str)
                 files.append(child)
 
     walk(path)
-    _run_parallel(config, files, lambda channel, item: channel.remove(item), f"Deleting {path}")
+    _run_parallel(config, files, _remove_file, f"Deleting {path}")
     for directory in reversed(directories):
         sftp.rmdir(directory)
     return len(files)
@@ -1131,7 +1174,8 @@ def main() -> int:
                 run_dry_run(config)
         return 0
     except (ConfigError, GeometryError, WorkerError, OSError, paramiko.SSHException) as exc:
-        LOG.error("%s", exc)
+        # A request timeout has an empty message; name the error type so the log says what failed.
+        LOG.error("%s: %s", type(exc).__name__, exc)
         return 1
 
 
