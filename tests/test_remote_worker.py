@@ -345,6 +345,48 @@ class RemoteWorkerTests(unittest.TestCase):
         self.assertIn("applied_at", plan)
         self.assertEqual(len(self._rollback_sets()), 2, "the reset still applies; the old set waits for cleanup")
 
+    def test_apply_scans_again_after_a_stalled_listing(self):
+        real = worker._build_remote_plan
+        calls = []
+
+        def stall_once(sftp, config):
+            calls.append(1)
+            if len(calls) == 1:
+                raise worker.ListingFailed("cannot list remote directory /save/map/1: TimeoutError: ")
+            return real(sftp, config)
+
+        with patch("worker._build_remote_plan", side_effect=stall_once), patch("worker.RETRY_DELAY_SECONDS", 0), \
+                self._connect_fresh(), patch("worker._save_plan"):
+            plan = worker.run_apply(self.config)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("applied_at", plan)
+        self.assertFalse((self.save / "map" / "1").exists())
+
+    def test_scan_gives_up_after_three_attempts_without_changing_anything(self):
+        with patch("worker._build_remote_plan", side_effect=TimeoutError()) as build, \
+                patch("worker.RETRY_DELAY_SECONDS", 0), self._connect_fresh(), patch("worker._save_plan"):
+            with self.assertRaises(worker.WorkerError) as caught:
+                worker.run_apply(self.config)
+        self.assertEqual(build.call_count, worker.SCAN_ATTEMPTS)
+        self.assertIn("nothing was changed", str(caught.exception))
+        self.assertTrue((self.save / "map" / "1" / "0.bin").is_file())
+
+    def test_listing_error_names_the_error_type(self):
+        class Stalled:
+            def listdir_attr(self, path):
+                raise TimeoutError()
+
+        with self.assertRaises(worker.ListingFailed) as caught:
+            worker._listdir(Stalled(), "/save/map/539")
+        self.assertIn("/save/map/539: TimeoutError", str(caught.exception))
+
+    def test_validation_errors_are_not_retried(self):
+        with patch("worker._build_remote_plan", side_effect=worker.WorkerError("no zones")) as build, \
+                patch("worker.RETRY_DELAY_SECONDS", 0), self._connect_fresh():
+            with self.assertRaises(worker.WorkerError):
+                worker.run_dry_run(self.config)
+        self.assertEqual(build.call_count, 1)
+
     def test_rollback_without_a_rollback_set_is_refused(self):
         for path in sorted(self.save.glob("softreset.rollback-*/**/*"), reverse=True):
             path.unlink() if path.is_file() else path.rmdir()

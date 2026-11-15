@@ -131,11 +131,16 @@ def _connect(config: dict[str, Any]) -> tuple[paramiko.SSHClient, paramiko.SFTPC
         raise
 
 
+class ListingFailed(WorkerError):
+    """Listing a remote folder failed (often a stalled SFTP request); the scan can be retried."""
+
+
 def _listdir(sftp: paramiko.SFTPClient, remote_dir: str) -> list[paramiko.SFTPAttributes]:
     try:
         entries = sftp.listdir_attr(remote_dir)
     except OSError as exc:
-        raise WorkerError(f"cannot list remote directory {remote_dir}: {exc}") from exc
+        # A request timeout has an empty message, so name the error type too.
+        raise ListingFailed(f"cannot list remote directory {remote_dir}: {type(exc).__name__}: {exc}") from exc
     return entries
 
 
@@ -507,10 +512,41 @@ def _log_target_counts(plan: dict[str, Any], verb: str) -> None:
                          for name in counts["shared_file_names"]))
 
 
+SCAN_ATTEMPTS = 3
+SCAN_RETRY_ERRORS = (ListingFailed, EOFError, TimeoutError, paramiko.SSHException)
+
+
+def _plan_with_retries(config: dict[str, Any], client: paramiko.SSHClient, sftp: paramiko.SFTPClient):
+    """Scan and plan; if the read-only scan stalls, log in again and scan again (up to 3 times).
+
+    Only the scan is repeated: nothing on the server has changed at this point. Returns
+    (client, sftp, plan, targets); the caller continues on the connection returned here.
+    """
+    for attempt in range(1, SCAN_ATTEMPTS + 1):
+        try:
+            plan, targets = _build_remote_plan(sftp, config)
+            return client, sftp, plan, targets
+        except SCAN_RETRY_ERRORS as exc:
+            if attempt == SCAN_ATTEMPTS:
+                raise WorkerError(f"scan failed {SCAN_ATTEMPTS} times; nothing was changed. Last error: "
+                                  f"{type(exc).__name__}: {exc}") from exc
+            LOG.warning("Scan interrupted (attempt %d of %d: %s: %s); nothing was changed. "
+                        "Logging in again and scanning again in %ds",
+                        attempt, SCAN_ATTEMPTS, type(exc).__name__, exc, RETRY_DELAY_SECONDS)
+            for close in (sftp.close, client.close):
+                try:
+                    close()
+                except Exception:  # the old connection may already be dead
+                    pass
+            time_module.sleep(RETRY_DELAY_SECONDS)
+            client, sftp = _connect(config)
+    raise AssertionError("unreachable")
+
+
 def run_dry_run(config: dict[str, Any]) -> dict[str, Any]:
     client, sftp = _connect(config)
     try:
-        plan, _targets = _build_remote_plan(sftp, config)
+        client, sftp, plan, _targets = _plan_with_retries(config, client, sftp)
         plan["action"] = "dry-run"
         _save_plan(plan)
         LOG.info(
@@ -827,7 +863,7 @@ def run_apply(config: dict[str, Any], *, scheduled: bool = False) -> dict[str, A
     client, sftp = _connect(config)
     try:
         save_dir = config["server"]["save_dir"]
-        plan, targets = _build_remote_plan(sftp, config)
+        client, sftp, plan, targets = _plan_with_retries(config, client, sftp)
         plan["action"] = "apply"
         _save_plan(plan)
         LOG.info("Applying reset for %s (%s)", config["server"]["name"], ", ".join(targets))

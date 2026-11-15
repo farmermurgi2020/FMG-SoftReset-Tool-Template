@@ -161,6 +161,8 @@ The dashboard only uses the token while the page is open; it is never saved.
 2. **Apply:** stop the server in your host's panel and wait until it is offline.
    Then type the server name in **Reset now / roll back** and click **Apply reset
    now**. On a ~250,000-chunk map this took about 12 minutes.
+   The first step is a read-only scan; if the SFTP server stops answering, the
+   worker logs in again and scans again (up to 3 attempts) before changing anything.
 3. **Roll back:** with the server stopped, click **Roll back latest reset**.
 4. **Scheduled apply (optional):** set **Scheduled runs do** to **Apply the
    reset** and sync again. Use your host's power schedule to stop the server
