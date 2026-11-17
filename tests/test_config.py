@@ -60,3 +60,22 @@ class ConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProtectedAreaNotesTests(unittest.TestCase):
+    def test_counts_and_reset_all_warning(self):
+        from config import protected_area_notes
+        plan = {"protected_zone_counts": {"claimed-vehicle": 3, "tool": 1},
+                "target_modes": {"map_chunks": "reset_all"}}
+        info, warnings = protected_area_notes(plan)
+        self.assertIn("Claimed vehicles (Knox Claim) protected: 3", info)
+        self.assertEqual(len(warnings), 1)
+        plan["target_modes"]["map_chunks"] = "protect"
+        self.assertEqual(protected_area_notes(plan)[1], [])
+
+    def test_mod_protection_errors(self):
+        from config import mod_protection_errors
+        self.assertEqual(mod_protection_errors({}), [])
+        self.assertEqual(mod_protection_errors({"modProtections": {"k": {"status": "ok"}}}), [])
+        self.assertEqual(mod_protection_errors({"modProtections": {"k": {"status": "error", "message": "boom"}}}),
+                         ["k: boom"])

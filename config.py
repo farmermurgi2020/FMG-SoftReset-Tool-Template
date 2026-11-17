@@ -162,6 +162,73 @@ def merge_exported_worker_settings(config: dict[str, Any], export: dict[str, Any
     return config
 
 
+# Zone sources the in-game mod exports. "claimed-vehicle" areas come from another mod (Knox
+# Claim) and are only written when that mod is active. "non-pvp" zones are never protection.
+ZONE_SOURCES = {"safehouse", "tool", "claimed-vehicle"}
+ZONE_SOURCE_LABELS = {
+    "safehouse": "Safehouses",
+    "tool": "Admin protected areas",
+    "claimed-vehicle": "Claimed vehicles (Knox Claim)",
+}
+
+
+def eligible_export_zones(export: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the exported zones that count as protection, refusing unknown sources."""
+    zones = export.get("zones")
+    if not isinstance(zones, list):
+        raise ConfigError("zone export must contain a zones array")
+    eligible = []
+    for zone in zones:
+        if not isinstance(zone, dict):
+            raise ConfigError("each exported zone must be an object")
+        source = zone.get("source")
+        if source == "non-pvp":
+            continue
+        if export.get("schemaVersion") == 2 and source not in ZONE_SOURCES:
+            raise ConfigError(f"unsupported protected-zone source in schemaVersion 2 export: {source!r}")
+        eligible.append(zone)
+    return eligible
+
+
+def zone_source_counts(zones: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for zone in zones:
+        source = str(zone.get("source", "manual"))
+        counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
+def mod_protection_errors(export: dict[str, Any]) -> list[str]:
+    """Problems the mod reported while reading another mod's data (e.g. Knox Claim's claims).
+
+    A protection that could not be read means the export may be missing areas that should be
+    kept, so a reset that keeps protected zones must not run on it.
+    """
+    protections = export.get("modProtections")
+    if protections is None:
+        return []
+    if not isinstance(protections, dict):
+        return ["modProtections in the zone export is not an object"]
+    errors = []
+    for name, value in sorted(protections.items()):
+        if not isinstance(value, dict):
+            errors.append(f"{name}: invalid entry")
+        elif value.get("status") == "error":
+            errors.append(f"{name}: {value.get('message') or 'could not be read'}")
+    return errors
+
+
+def protected_area_notes(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """(info lines, warning lines) about the protected areas behind a plan, for logs and summaries."""
+    counts = plan.get("protected_zone_counts") or {}
+    info = [f"{ZONE_SOURCE_LABELS.get(source, source)} protected: {count}" for source, count in sorted(counts.items())]
+    warnings = []
+    if counts.get("claimed-vehicle") and plan.get("target_modes", {}).get("map_chunks") == "reset_all":
+        warnings.append("Map chunks are set to Reset everything, which ignores protected areas: "
+                        f"{counts['claimed-vehicle']} claimed vehicle(s) will NOT be protected.")
+    return info, warnings
+
+
 def validate_config(value: Any) -> None:
     if not isinstance(value, dict):
         raise ConfigError("config must be a JSON object")

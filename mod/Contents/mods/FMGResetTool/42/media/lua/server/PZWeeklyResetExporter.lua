@@ -104,6 +104,80 @@ local function readManualZones()
     return result
 end
 
+-- Other-mod compatibility. Each block runs only when that mod is active, so this mod keeps
+-- working when the other mod is removed.
+local function modActive(modId)
+    local mods = getActivatedMods and getActivatedMods()
+    if not mods then return false end
+    return mods:contains(modId) or mods:contains("\\" .. modId)
+end
+
+-- Knox Claim (Workshop 3776531408): a claimed vehicle has modData.KnoxClaimKey and a record in
+-- KnoxClaim.Store.vehicles() with its last known x/y (updated while driven). Same claim check as
+-- FMG Vehicle Zoning. Each claimed vehicle gets a protected area of CLAIM_MARGIN tiles around it,
+-- snapped to chunks (3x3 chunks), at the spot this mod noted when the vehicle was last driven,
+-- towed or parked (trackClaimedVehicles), or else at Knox Claim's stored position.
+local CLAIM_MARGIN = 8
+
+local function claimedVehicleZone(key, name, x, y)
+    local left = math.floor((x - CLAIM_MARGIN) / CHUNK_SIZE) * CHUNK_SIZE
+    local top = math.floor((y - CLAIM_MARGIN) / CHUNK_SIZE) * CHUNK_SIZE
+    local right = (math.floor((x + CLAIM_MARGIN) / CHUNK_SIZE) + 1) * CHUNK_SIZE
+    local bottom = (math.floor((y + CLAIM_MARGIN) / CHUNK_SIZE) + 1) * CHUNK_SIZE
+    return left, top, formatZone(
+        "claimed-vehicle",
+        "knox-" .. tostring(key) .. "-" .. tostring(left) .. "-" .. tostring(top),
+        "Claimed vehicle: " .. tostring(name or "vehicle"),
+        left, top, right - left, bottom - top
+    )
+end
+
+-- Returns zones and a status table (nil when Knox Claim is not active).
+local function readClaimedVehicles()
+    if not (KnoxClaim or modActive("KnoxClaim")) then return {}, nil end
+    local store = KnoxClaim and KnoxClaim.Store
+    if not store or type(store.vehicles) ~= "function" then
+        return {}, { status = "error", message = "Knox Claim is active but its claim list is not available" }
+    end
+    local ok, claims = pcall(store.vehicles)
+    if not ok or type(claims) ~= "table" then
+        return {}, { status = "error", message = "could not read Knox Claim's claim list: " .. tostring(claims) }
+    end
+    local zones, seen = {}, {}
+    local function add(key, name, x, y)
+        if type(x) ~= "number" or type(y) ~= "number" then return false end
+        local left, top, zone = claimedVehicleZone(key, name, x, y)
+        local spot = tostring(left) .. "," .. tostring(top)
+        if not seen[spot] then
+            seen[spot] = true
+            zones[#zones + 1] = zone
+        end
+        return true
+    end
+    -- Knox Claim stores a new position only if someone sits in the vehicle at a 10-minute tick.
+    -- The spot this mod noted when the vehicle was last driven, towed or parked is always newer,
+    -- so use it when there is one; otherwise use Knox Claim's stored position.
+    local spots = data.claimedVehicleSpots or {}
+    for key in pairs(spots) do
+        if claims[key] == nil then spots[key] = nil end
+    end
+    local count, unplaced = 0, 0
+    for key, record in pairs(claims) do
+        count = count + 1
+        local spot = spots[tostring(key)]
+        local name = type(record) == "table" and record.name or nil
+        local placed = false
+        if type(spot) == "table" then placed = add(key, name, spot.x, spot.y) end
+        if not placed and type(record) == "table" then placed = add(key, name, record.x, record.y) end
+        if not placed then unplaced = unplaced + 1 end
+    end
+    if unplaced > 0 then
+        return zones, { status = "error", count = count, message = tostring(unplaced)
+            .. " claimed vehicle(s) have no known position; drive or open each one once so Knox Claim stores it" }
+    end
+    return zones, { status = "ok", count = count, areas = #zones }
+end
+
 local function jsonObject(tableValue)
     local keys = {}
     for key in pairs(tableValue) do keys[#keys + 1] = key end
@@ -129,6 +203,15 @@ end
 local function buildExport()
     local zones = readSafehouses()
     for _, zone in ipairs(readManualZones()) do zones[#zones + 1] = zone end
+    local modProtections = {}
+    local claimedZones, knoxStatus = readClaimedVehicles()
+    for _, zone in ipairs(claimedZones) do zones[#zones + 1] = zone end
+    if knoxStatus then
+        modProtections[#modProtections + 1] = jsonString("knoxClaimVehicles") .. ":" .. jsonObject(knoxStatus)
+        if knoxStatus.status == "error" then
+            print("[FMGResetTool] WARNING: Knox Claim vehicles: " .. tostring(knoxStatus.message))
+        end
+    end
     local core = getCore()
     if not core then error("game core is unavailable") end
     local build = callFirst(core, { "getVersion" }, "core")
@@ -137,13 +220,14 @@ local function buildExport()
     -- that came from a different save than the one it is about to reset.
     local saveName = getServerName and getServerName() or ""
     return string.format(
-        '{"schemaVersion":2,"build":%s,"saveName":%s,"executionMode":%s,"generatedAt":%s,"settingsSavedAt":%s,"zones":[%s],"resetModes":%s,"resetTargets":%s,"schedule":%s,"safety":%s}',
+        '{"schemaVersion":2,"build":%s,"saveName":%s,"executionMode":%s,"generatedAt":%s,"settingsSavedAt":%s,"zones":[%s],"modProtections":{%s},"resetModes":%s,"resetTargets":%s,"schedule":%s,"safety":%s}',
         jsonString(build),
         jsonString(saveName),
         jsonString(data.settings.executionMode or "local"),
         jsonString(os.date("!%Y-%m-%dT%H:%M:%SZ")),
         jsonString(data.settings.savedAt or ""),
         table.concat(zones, ","),
+        table.concat(modProtections, ","),
         jsonObject(settings.resetModes),
         jsonObject(settings.resetTargets),
         jsonObject(settings.schedule),
@@ -173,6 +257,54 @@ local function exportWithLog()
         nextExport = os.time() + EXPORT_INTERVAL_SECONDS
         print("[FMGResetTool] ERROR: export failed: " .. tostring(err))
     end
+end
+
+-- Knox Claim compatibility: note where claimed vehicles are while players drive or tow them, and
+-- the spot where they get out, then refresh the export so a reset sees the parked position.
+local TRACK_INTERVAL_SECONDS = 10
+local nextTrack = 0
+local drivenVehicles = {}
+
+local function noteClaimedSpot(vehicle)
+    if not vehicle then return false end
+    local modData = vehicle:getModData()
+    local key = modData and modData.KnoxClaimKey
+    if key == nil then return false end
+    key = tostring(key)
+    local x, y = math.floor(vehicle:getX()), math.floor(vehicle:getY())
+    local spot = data.claimedVehicleSpots[key]
+    if spot and spot.x == x and spot.y == y then return true end
+    data.claimedVehicleSpots[key] = { x = x, y = y }
+    return true
+end
+
+local function noteWithTowed(vehicle)
+    local claimed = noteClaimedSpot(vehicle)
+    local towed = vehicle and vehicle.getVehicleTowing and vehicle:getVehicleTowing()
+    if towed and noteClaimedSpot(towed) then claimed = true end
+    return claimed
+end
+
+local function trackClaimedVehicles()
+    if not (KnoxClaim or modActive("KnoxClaim")) then return end
+    local online = getOnlinePlayers and getOnlinePlayers()
+    if not online then return end
+    local current = {}
+    for index = 0, online:size() - 1 do
+        local player = online:get(index)
+        local vehicle = player and player:getVehicle()
+        if vehicle then
+            current[player:getUsername()] = vehicle
+            noteWithTowed(vehicle)
+        end
+    end
+    local parked = false
+    for name, vehicle in pairs(drivenVehicles) do
+        -- The player got out (or changed vehicle): note the exact parked position.
+        if current[name] ~= vehicle and noteWithTowed(vehicle) then parked = true end
+    end
+    drivenVehicles = current
+    if parked then exportWithLog() end
 end
 
 -- Per-target reset modes: protect = reset but keep protected zones, reset_all = ignore zones,
@@ -224,6 +356,7 @@ local function initialize()
     data = ModData.getOrCreate(DATA_KEY)
     data.schemaVersion = 2
     if type(data.protectedZones) ~= "table" then data.protectedZones = {} end
+    if type(data.claimedVehicleSpots) ~= "table" then data.claimedVehicleSpots = {} end
     if type(data.settings) ~= "table" then data.settings = defaultSettings() end
     if data.settings.executionMode ~= "local" and data.settings.executionMode ~= "dedicated" then
         data.settings.executionMode = "local"
@@ -477,5 +610,12 @@ Events.OnServerStarted.Add(function()
 end)
 Events.OnClientCommand.Add(onClientCommand)
 Events.OnTick.Add(function()
-    if isServer() and os.time() >= nextExport then exportWithLog() end
+    if not isServer() then return end
+    local now = os.time()
+    if data and now >= nextTrack then
+        nextTrack = now + TRACK_INTERVAL_SECONDS
+        local ok, err = pcall(trackClaimedVehicles)
+        if not ok then print("[FMGResetTool] ERROR: claimed vehicle tracking failed: " .. tostring(err)) end
+    end
+    if now >= nextExport then exportWithLog() end
 end)

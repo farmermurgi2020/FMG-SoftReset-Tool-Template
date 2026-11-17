@@ -19,7 +19,17 @@ from typing import Any, Iterable
 
 import paramiko
 
-from config import ROOT, ConfigError, load_config, merge_exported_worker_settings, target_modes
+from config import (
+    ROOT,
+    ZONE_SOURCE_LABELS,
+    ConfigError,
+    eligible_export_zones,
+    load_config,
+    merge_exported_worker_settings,
+    mod_protection_errors,
+    target_modes,
+    zone_source_counts,
+)
 from geometry import GeometryError, Rect, covered_grid_units, protected_chunks, rectangles_from_export
 from schedule import validate_timezone
 
@@ -218,6 +228,25 @@ def _read_remote_json(sftp: paramiko.SFTPClient, path: str) -> dict[str, Any]:
     return data
 
 
+def _eligible_zones(export: dict[str, Any], require_zones: bool) -> list[dict[str, Any]]:
+    """Zones that count as protection, shared by the dedicated and local workers."""
+    try:
+        zones = eligible_export_zones(export)
+    except ConfigError as exc:
+        raise WorkerError(str(exc)) from exc
+    counts = zone_source_counts(zones)
+    if counts:
+        LOG.info("Protected areas in the zone export: %s", ", ".join(
+            f"{ZONE_SOURCE_LABELS.get(source, source)} {count}" for source, count in sorted(counts.items())))
+    errors = mod_protection_errors(export)
+    if errors and require_zones:
+        raise WorkerError(
+            "the mod could not read another mod's protected areas, so the zone export may be missing "
+            "areas to keep; refusing to reset (" + "; ".join(errors) + ")"
+        )
+    return zones
+
+
 def _validate_zone_export(
     export: dict[str, Any], config: dict[str, Any], *, require_zones: bool = True
 ) -> list[Rect]:
@@ -245,19 +274,7 @@ def _validate_zone_export(
         raise WorkerError(f"invalid worker settings in live export: {exc}") from exc
     if (generated_at.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds() > 300:
         raise WorkerError("live zone export timestamp is more than 5 minutes in the future")
-    zones = export.get("zones")
-    if not isinstance(zones, list):
-        raise WorkerError("live zone export must contain a zones array")
-    eligible_zones = []
-    for zone in zones:
-        if not isinstance(zone, dict):
-            raise WorkerError("each live zone must be an object")
-        source = zone.get("source")
-        if source == "non-pvp":
-            continue
-        if schema_version == 2 and source not in {"safehouse", "tool"}:
-            raise WorkerError(f"unsupported protected-zone source in schemaVersion 2 export: {source!r}")
-        eligible_zones.append(zone)
+    eligible_zones = _eligible_zones(export, require_zones)
     try:
         live_rects = rectangles_from_export({"zones": eligible_zones})
     except (GeometryError, TypeError) as exc:
@@ -315,6 +332,7 @@ def _plan_data(
         "total_chunks": len(chunks),
         "protected_count": len(keep),
         "protected_cell_count": len(covered_grid_units(live_rects, 256)),
+        "protected_zone_counts": zone_source_counts(eligible_export_zones(export)),
         "remove_count": len(remove),
         "delete_fraction": len(remove) / len(chunks),
         "keep": [[chunk.x, chunk.y] for chunk in keep],

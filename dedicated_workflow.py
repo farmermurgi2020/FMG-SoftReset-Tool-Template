@@ -8,7 +8,7 @@ import sys
 from datetime import datetime, time
 from pathlib import Path
 
-from config import CONFIG_PATH, ROOT, ConfigError, load_config
+from config import CONFIG_PATH, ROOT, ConfigError, load_config, protected_area_notes
 from schedule import github_cron_for, occurrence_on_or_after, validate_timezone
 
 
@@ -128,6 +128,9 @@ def _reset_summary(action: str, plan: dict, succeeded: bool) -> list[str]:
             lines.append(f"- Replaced state kept at: `{plan.get('remote_rollback_dir')}` (roll back again to undo)")
     else:
         lines.append(f"- Protected 256-tile cells covered by zones: {plan.get('protected_cell_count', 0)}")
+        info, warnings = protected_area_notes(plan)
+        lines += [f"- {line}" for line in info]
+        lines += [f"- **WARNING:** {line}" for line in warnings]
         selected = plan.get("reset_targets", {"map_chunks": True})
         verb = "Reset" if action == "apply" and succeeded else "Planned for reset"
         modes = plan.get("target_modes", {})

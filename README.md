@@ -281,8 +281,13 @@ undo copy of the first.
 | Mod | What the tool does | Status |
 |---|---|---|
 | Knox Claim (Workshop 3776531408): safehouses and land claims | Hard reset empties its land and vehicle claim lists, so it can't rebuild the removed safehouses. Undo brings them back. | Tested on a dedicated server |
-| Knox Claim (Workshop 3776531408): claimed vehicles | A map chunk reset of the area where a claimed vehicle is parked has not been checked yet. Park claimed vehicles inside a protected zone until it is. | Not tested yet |
-| Project A-Life NPCs (Workshop 3803984183) | Its NPCs are zombies with a registry in global mod data that respawns them; the soft reset never touches global mod data, so a zpop reset should not lose NPCs. | Not tested yet |
+| Knox Claim (Workshop 3776531408): claimed vehicles | From mod 0.5.0, while Knox Claim is active, the zone export adds a protected area of 3x3 chunks (24x24 tiles) around each claimed vehicle. The mod notes where a claimed vehicle is parked when its driver gets out (checked every 10 seconds) and uses that spot, or else the position Knox Claim stored. If Knox Claim's claim list can't be read, a reset that keeps protected zones is refused. "Reset everything" ignores these areas, like every protected area. A claimed vehicle pushed by hand or moved by an admin, with nobody inside, keeps its old spot. | Tested locally (2026-11-16) |
+| Project A-Life (Workshop 3803984183): NPCs | Its NPCs are records in global mod data; their bodies are spawned near players and removed again. The soft reset never touches global mod data. | Tested locally: NPCs come back after a zpop reset (2026-11-16) |
+| Project A-Life (Workshop 3803984183): outposts | Outposts are built into the world, so a map chunk reset outside protected zones would erase them. Protect them with an admin zone for now. | Not protected yet |
+| Dynamic Outposts (Workshop 3791152383) | Outposts are built into the world from blueprints; what a map chunk reset does to them has not been checked. Protect them with an admin zone for now. | Not tested yet |
+
+Code for another mod runs only when that mod is active, so the tool keeps working
+without it.
 
 ## Updating
 

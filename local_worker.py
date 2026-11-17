@@ -15,11 +15,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from config import ROOT, ConfigError, load_config, merge_exported_worker_settings, target_modes
+from config import (
+    ROOT,
+    ConfigError,
+    load_config,
+    merge_exported_worker_settings,
+    protected_area_notes,
+    target_modes,
+)
 from geometry import GeometryError, Rect, protected_chunks
 from history import append_run_record
 from local_saves import export_save_mismatch
 from worker import (
+    _eligible_zones,
     Chunk,
     LAYOUT_APPROVAL,
     WorkerError,
@@ -96,22 +104,13 @@ def _read_zone_export(path: Path, config: dict[str, Any]) -> tuple[dict[str, Any
     zones = export.get("zones")
     if not isinstance(zones, list) or (require_zones and not zones):
         raise WorkerError("zone export has no zones; refusing to reset")
-    eligible_zones = []
-    for zone in zones:
-        if not isinstance(zone, dict):
-            raise WorkerError("each exported zone must be an object")
-        source = zone.get("source")
-        if source == "non-pvp":
-            continue
-        if schema_version == 2 and source not in {"safehouse", "tool"}:
-            raise WorkerError(f"unsupported protected-zone source in schemaVersion 2 export: {source!r}")
-        eligible_zones.append(zone)
+    eligible_zones = _eligible_zones(export, require_zones)
     try:
         rects = [Rect.from_mapping(zone, source="live") for zone in eligible_zones]
     except (GeometryError, TypeError) as exc:
         raise WorkerError(f"invalid zone bounds: {exc}") from exc
     if require_zones and not rects:
-        raise WorkerError("zone export contains no safehouses or tool-protected areas; refusing to reset")
+        raise WorkerError("zone export contains no protected areas; refusing to reset")
     return export, rects
 
 
@@ -293,6 +292,11 @@ def run_local_dry_run(config: dict[str, Any], *, scheduled: bool = False) -> dic
                  target, MODE_LABELS[mode], counts["total"], counts["preserved"], counts["reset"])
         if counts.get("shared_files_preserved"):
             LOG.warning("%s: preserving shared population files that cannot be spatially filtered: %s", target, ", ".join(counts["shared_file_names"]))
+    info, warnings = protected_area_notes(plan)
+    for line in info:
+        LOG.info("%s", line)
+    for line in warnings:
+        LOG.warning("%s", line)
     LOG.info("Plan saved at %s; no save files were modified", PLAN_PATH)
     return plan
 

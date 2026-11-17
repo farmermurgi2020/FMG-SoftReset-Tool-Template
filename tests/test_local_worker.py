@@ -17,6 +17,24 @@ from local_worker import (
 from worker import Chunk, WorkerError
 
 
+_HISTORY_DIR = None
+_ORIGINAL_HISTORY_DIR = None
+
+
+def setUpModule():
+    # Keep test runs out of the real run-history folder the dashboard shows.
+    global _HISTORY_DIR, _ORIGINAL_HISTORY_DIR
+    import history
+    _HISTORY_DIR = tempfile.TemporaryDirectory()
+    _ORIGINAL_HISTORY_DIR = history.HISTORY_DIR
+    history.HISTORY_DIR = Path(_HISTORY_DIR.name) / "run-history"
+
+
+def tearDownModule():
+    import history
+    history.HISTORY_DIR = _ORIGINAL_HISTORY_DIR
+    _HISTORY_DIR.cleanup()
+
 class LocalWorkerTests(unittest.TestCase):
     def test_build_42_export_uses_only_safehouse_and_tool_zones_and_worker_settings(self):
         project = Path(__file__).resolve().parents[1]
@@ -45,6 +63,52 @@ class LocalWorkerTests(unittest.TestCase):
 
         self.assertEqual(len(rects), 2)
         self.assertEqual(export["schemaVersion"], 2)
+
+    def _write_export(self, path, config, zones, **extra):
+        payload = {
+            "schemaVersion": 2, "build": "42.22.2", "executionMode": "local",
+            "generatedAt": datetime.now(timezone.utc).isoformat(), "zones": zones,
+            "schedule": config["schedule"], "safety": config["safety"],
+        }
+        payload.update(extra)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def _example_config(self):
+        project = Path(__file__).resolve().parents[1]
+        config = json.loads((project / "config.example.json").read_text(encoding="utf-8"))
+        config["world"]["build"] = "42.22.2"
+        return config
+
+    def test_claimed_vehicle_zones_count_as_protection(self):
+        config = self._example_config()
+        with tempfile.TemporaryDirectory() as temporary:
+            export_path = Path(temporary) / "zones.json"
+            self._write_export(export_path, config, [
+                {"id": "tool-1", "x": 0, "y": 0, "w": 8, "h": 8, "source": "tool"},
+                {"id": "knox-1", "x": 800, "y": 800, "w": 24, "h": 24, "source": "claimed-vehicle"},
+            ], modProtections={"knoxClaimVehicles": {"status": "ok", "count": 1}})
+            _, rects = _read_zone_export(export_path, config)
+        self.assertEqual(len(rects), 2)
+
+    def test_refuses_when_knox_claims_could_not_be_read(self):
+        config = self._example_config()
+        with tempfile.TemporaryDirectory() as temporary:
+            export_path = Path(temporary) / "zones.json"
+            self._write_export(export_path, config, [
+                {"id": "tool-1", "x": 0, "y": 0, "w": 8, "h": 8, "source": "tool"},
+            ], modProtections={"knoxClaimVehicles": {"status": "error", "message": "store failed"}})
+            with self.assertRaisesRegex(WorkerError, "store failed"):
+                _read_zone_export(export_path, config)
+
+    def test_unknown_zone_source_is_still_refused(self):
+        config = self._example_config()
+        with tempfile.TemporaryDirectory() as temporary:
+            export_path = Path(temporary) / "zones.json"
+            self._write_export(export_path, config, [
+                {"id": "x-1", "x": 0, "y": 0, "w": 8, "h": 8, "source": "mystery"},
+            ])
+            with self.assertRaisesRegex(WorkerError, "unsupported protected-zone source"):
+                _read_zone_export(export_path, config)
 
     def test_scans_negative_chunk_coordinates(self):
         with tempfile.TemporaryDirectory() as temporary:
